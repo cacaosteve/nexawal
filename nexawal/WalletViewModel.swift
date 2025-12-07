@@ -32,6 +32,10 @@ class WalletViewModel: ObservableObject {
     private var storedMetadata: StoredWalletMetadata?
     private var isMainnet: Bool = true
     private var syncStatusPollTask: Task<Void, Never>?
+    private var lastPollingStatus: (chainHeight: UInt64, lastScanned: UInt64)?
+    private var lastPollingUpdate: Date?
+    private var pendingSyncPollRestart: Bool = false
+    private let pollingStagnationInterval: TimeInterval = 5.0
 
     // MARK: - Computed flags
 
@@ -209,18 +213,51 @@ class WalletViewModel: ObservableObject {
 
     private func startSyncStatusPolling() {
         syncStatusPollTask?.cancel()
+        pendingSyncPollRestart = false
+        lastPollingStatus = (chainHeight: chainHeight, lastScanned: lastScannedHeight)
+        lastPollingUpdate = Date()
         syncStatusPollTask = Task { [weak self] in
+            guard let self else { return }
             while !Task.isCancelled {
-                guard let self else { return }
                 do {
                     let status = try await self.walletManager.getSyncStatus()
-                    await MainActor.run {
+                    let shouldRestart = await MainActor.run { () -> Bool in
                         self.applySyncStatus(status)
+                        let now = Date()
+                        let tuple = (chainHeight: status.chainHeight, lastScanned: status.lastScanned)
+                        if self.lastPollingStatus?.chainHeight != tuple.chainHeight ||
+                            self.lastPollingStatus?.lastScanned != tuple.lastScanned {
+                            self.lastPollingStatus = tuple
+                            self.lastPollingUpdate = now
+                            return false
+                        }
+                        if !self.isSynced,
+                           let lastUpdate = self.lastPollingUpdate,
+                           now.timeIntervalSince(lastUpdate) > self.pollingStagnationInterval {
+                            self.lastPollingUpdate = now
+                            self.pendingSyncPollRestart = true
+                            return true
+                        }
+                        return false
+                    }
+                    if shouldRestart {
+                        break
                     }
                 } catch {
                     break
                 }
                 try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+            await MainActor.run {
+                if self.pendingSyncPollRestart {
+                    self.pendingSyncPollRestart = false
+                    self.syncStatusPollTask = nil
+                    self.startSyncStatusPolling()
+                } else {
+                    self.syncStatusPollTask = nil
+                    self.lastPollingStatus = nil
+                    self.lastPollingUpdate = nil
+                }
             }
         }
     }
@@ -228,6 +265,9 @@ class WalletViewModel: ObservableObject {
     private func stopSyncStatusPolling() {
         syncStatusPollTask?.cancel()
         syncStatusPollTask = nil
+        lastPollingStatus = nil
+        lastPollingUpdate = nil
+        pendingSyncPollRestart = false
     }
 
     private func applySyncStatus(_ status: WalletCoreFFIClient.SyncStatus) {

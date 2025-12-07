@@ -72,34 +72,18 @@ actor WalletManager {
 
         let nodeURL = MoneroConfig.nodeURL()
 
-        // Try with the configured node URL first
         do {
-            let status = try await Task.detached {
-                try WalletCoreFFIClient.refreshWallet(
-                    walletId: walletId,
-                    nodeURL: nodeURL
-                )
-                return try WalletCoreFFIClient.syncStatus(walletId: walletId)
-            }.value
-            // Clear cached balance after refresh
+            let status = try await performRefresh(walletId: walletId, nodeURL: nodeURL)
             cachedBalance = nil
             return status
         } catch let nodeError {
-            // If refresh fails with nodeURL, try without it (uses wallet core default)
-            // This helps if the configured node is unreachable
             do {
                 print("⚠️ Refresh with nodeURL '\(nodeURL)' failed: \(nodeError.localizedDescription)")
                 print("⚠️ Attempting refresh without nodeURL (using wallet core default)...")
-                let status = try await Task.detached {
-                    try WalletCoreFFIClient.refreshWallet(
-                        walletId: walletId,
-                        nodeURL: nil
-                    )
-                    return try WalletCoreFFIClient.syncStatus(walletId: walletId)
-                }.value
+                let fallbackStatus = try await performRefresh(walletId: walletId, nodeURL: nil)
                 cachedBalance = nil
                 print("✅ Refresh succeeded using wallet core default node")
-                return status
+                return fallbackStatus
             } catch let defaultError {
                 let detailedError = """
                 Failed to refresh wallet.
@@ -150,6 +134,31 @@ actor WalletManager {
             return try WalletCoreFFIClient.syncStatus(walletId: walletId)
         } catch {
             throw WalletError.statusFailed(error.localizedDescription)
+        }
+    }
+
+    private func performRefresh(walletId: String, nodeURL: String?) async throws -> WalletCoreFFIClient.SyncStatus {
+        try WalletCoreFFIClient.refreshWalletAsync(walletId: walletId, nodeURL: nodeURL)
+        return try await waitForRefreshCompletion(using: walletId)
+    }
+
+    private func waitForRefreshCompletion(using walletId: String, timeout: TimeInterval = 240, pollInterval: TimeInterval = 0.2) async throws -> WalletCoreFFIClient.SyncStatus {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while true {
+            let status = try WalletCoreFFIClient.syncStatus(walletId: walletId)
+
+            if status.chainHeight > 0 && status.lastScanned >= status.chainHeight {
+                return status
+            }
+
+            if Date() >= deadline {
+                throw WalletError.refreshFailed("Timed out waiting for wallet refresh to finish")
+            }
+
+            let interval = max(pollInterval, 0.05)
+            let nanoseconds = UInt64(interval * 1_000_000_000)
+            try await Task.sleep(nanoseconds: nanoseconds)
         }
     }
 
