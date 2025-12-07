@@ -87,7 +87,7 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
         case lastUpdated
     }
 
-    init(from decoder: Decoder) throws {
+    nonisolated(unsafe) init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         walletId = try container.decode(String.self, forKey: .walletId)
         restoreHeight = try container.decodeIfPresent(UInt64.self, forKey: .restoreHeight) ?? 0
@@ -102,7 +102,7 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
         lastUpdated = try container.decodeIfPresent(Date.self, forKey: .lastUpdated) ?? creation
     }
 
-    func encode(to encoder: Encoder) throws {
+    nonisolated(unsafe) func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(walletId, forKey: .walletId)
         try container.encode(restoreHeight, forKey: .restoreHeight)

@@ -9,9 +9,9 @@
 import Foundation
 
 struct MoneroConfig {
-    private static let defaultAddress = "192.168.4.137:18081"
-    private static let userDefaultsKey = "monero_daemon_address"
-    
+    nonisolated(unsafe) static let defaultAddress = "192.168.4.137:18081"
+    nonisolated(unsafe) static let userDefaultsKey = "monero_daemon_address"
+
     /// Monero daemon address (hostname:port format)
     /// Defaults to local dev server, can be overridden via environment or settings
     /// This is nonisolated and safe to call from any context
@@ -23,19 +23,19 @@ struct MoneroConfig {
         }
         return defaultAddress
     }
-    
+
     /// Set the daemon address (persisted in UserDefaults)
     /// Must be called from MainActor context
     @MainActor
     static func setDaemonAddress(_ address: String) {
         UserDefaults.standard.set(address, forKey: userDefaultsKey)
     }
-    
+
     /// Full daemon URL for HTTP requests (if needed)
     nonisolated static func daemonURL() -> String {
         return "http://\(daemonAddress)"
     }
-    
+
     /// Node URL format for WalletCoreFFI (full URL with protocol)
     /// The wallet core expects a full URL like "http://hostname:port"
     /// Safe to call from any actor context
@@ -48,4 +48,3 @@ struct MoneroConfig {
         return "http://\(daemonAddress)"
     }
 }
-

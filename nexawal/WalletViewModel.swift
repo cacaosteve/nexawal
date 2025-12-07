@@ -32,6 +32,7 @@ class WalletViewModel: ObservableObject {
     private var storedMetadata: StoredWalletMetadata?
     private var isMainnet: Bool = true
     private var syncStatusPollTask: Task<Void, Never>?
+    private var isManualRescanInProgress: Bool = false
     private var lastPollingStatus: (chainHeight: UInt64, lastScanned: UInt64)?
     private var lastPollingUpdate: Date?
     private var pendingSyncPollRestart: Bool = false
@@ -199,9 +200,69 @@ class WalletViewModel: ObservableObject {
             totalBalance = balance.total
             unlockedBalance = balance.unlocked
 
-            await persistMetadataUpdate()
+            await persistMetadataUpdate { metadata in
+                metadata.totalBalance = balance.total
+                metadata.unlockedBalance = balance.unlocked
+            }
         } catch {
             errorMessage = "Failed to get balance: \(error.localizedDescription)"
+        }
+    }
+
+    func rescan(from height: UInt64) async {
+        let trimmedMnemonic = mnemonic.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMnemonic.isEmpty else {
+            errorMessage = "Rescan failed: mnemonic is unavailable."
+            return
+        }
+
+        if isRefreshing {
+            return
+        }
+
+        isManualRescanInProgress = true
+        isRefreshing = true
+        errorMessage = nil
+        mnemonic = trimmedMnemonic
+        restoreHeight = height
+        lastScannedHeight = height
+        chainHeight = max(chainHeight, height)
+        totalBalance = 0
+        unlockedBalance = 0
+        startSyncStatusPolling()
+
+        defer {
+            isManualRescanInProgress = false
+            stopSyncStatusPolling()
+            isRefreshing = false
+        }
+
+        do {
+            try await walletManager.openWallet(
+                mnemonic: trimmedMnemonic,
+                walletId: walletId,
+                restoreHeight: height,
+                mainnet: isMainnet
+            )
+
+            isWalletOpen = true
+
+            let status = try await walletManager.refreshWallet()
+            applySyncStatus(status)
+
+            let balance = try await walletManager.getBalance()
+            totalBalance = balance.total
+            unlockedBalance = balance.unlocked
+
+            await persistMetadataUpdate { [self] metadata in
+                metadata.restoreHeight = self.restoreHeight
+                metadata.lastScannedHeight = self.lastScannedHeight
+                metadata.chainHeight = self.chainHeight
+                metadata.totalBalance = self.totalBalance
+                metadata.unlockedBalance = self.unlockedBalance
+            }
+        } catch {
+            errorMessage = "Rescan failed: \(error.localizedDescription)"
         }
     }
 
@@ -232,6 +293,7 @@ class WalletViewModel: ObservableObject {
                             return false
                         }
                         if !self.isSynced,
+                           !self.isManualRescanInProgress,
                            let lastUpdate = self.lastPollingUpdate,
                            now.timeIntervalSince(lastUpdate) > self.pollingStagnationInterval {
                             self.lastPollingUpdate = now
@@ -272,29 +334,44 @@ class WalletViewModel: ObservableObject {
 
     private func applySyncStatus(_ status: WalletCoreFFIClient.SyncStatus) {
         let normalizedChainHeight = max(status.chainHeight, status.restoreHeight, status.lastScanned)
-        let normalizedLastScanned = min(max(status.lastScanned, status.restoreHeight), normalizedChainHeight)
+        let normalizedRestoreHeight = min(status.restoreHeight, normalizedChainHeight)
+        let normalizedLastScanned = min(max(status.lastScanned, normalizedRestoreHeight), normalizedChainHeight)
 
-        chainHeight = max(chainHeight, normalizedChainHeight)
+        let updatedChainHeight = max(chainHeight, normalizedChainHeight)
+        let updatedRestoreHeight = min(max(restoreHeight, normalizedRestoreHeight), updatedChainHeight)
+        let candidateLastScanned = max(lastScannedHeight, normalizedLastScanned)
+        let clampedLastScanned = max(candidateLastScanned, updatedRestoreHeight)
+        let updatedLastScanned = min(clampedLastScanned, updatedChainHeight)
+
+        chainHeight = updatedChainHeight
         if status.chainTime > 0 {
             chainTime = status.chainTime
         }
-        restoreHeight = max(restoreHeight, status.restoreHeight)
-        lastScannedHeight = min(max(lastScannedHeight, normalizedLastScanned), chainHeight)
+        restoreHeight = updatedRestoreHeight
+        lastScannedHeight = updatedLastScanned
     }
 
     private func applyMetadataSnapshot(_ metadata: StoredWalletMetadata) async {
         var snapshot = metadata
         let normalizedChainHeight = max(snapshot.chainHeight, snapshot.lastScannedHeight, snapshot.restoreHeight)
-        let normalizedLastScanned = min(max(snapshot.lastScannedHeight, snapshot.restoreHeight), normalizedChainHeight)
+        let normalizedRestoreHeight = min(snapshot.restoreHeight, normalizedChainHeight)
+        let normalizedLastScanned = min(max(snapshot.lastScannedHeight, normalizedRestoreHeight), normalizedChainHeight)
 
         snapshot.chainHeight = normalizedChainHeight
+        snapshot.restoreHeight = normalizedRestoreHeight
         snapshot.lastScannedHeight = normalizedLastScanned
 
         storedMetadata = snapshot
 
-        restoreHeight = max(restoreHeight, snapshot.restoreHeight)
-        chainHeight = max(chainHeight, snapshot.chainHeight)
-        lastScannedHeight = min(max(lastScannedHeight, snapshot.lastScannedHeight), chainHeight)
+        let updatedChainHeight = max(chainHeight, normalizedChainHeight)
+        let updatedRestoreHeight = min(max(restoreHeight, normalizedRestoreHeight), updatedChainHeight)
+        let candidateLastScanned = max(lastScannedHeight, normalizedLastScanned)
+        let clampedLastScanned = max(candidateLastScanned, updatedRestoreHeight)
+        let updatedLastScanned = min(clampedLastScanned, updatedChainHeight)
+
+        restoreHeight = updatedRestoreHeight
+        chainHeight = updatedChainHeight
+        lastScannedHeight = updatedLastScanned
         totalBalance = snapshot.totalBalance
         unlockedBalance = snapshot.unlockedBalance
         biometricsEnabled = snapshot.biometricsEnabled

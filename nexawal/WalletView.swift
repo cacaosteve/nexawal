@@ -10,6 +10,7 @@ import SwiftUI
 struct WalletView: View {
     @ObservedObject var viewModel: WalletViewModel
     @State private var showSettings: Bool = false
+    @State private var showReceive: Bool = false
 
     var body: some View {
         NavigationView {
@@ -109,27 +110,43 @@ struct WalletView: View {
                     .padding(.horizontal)
 
                     // Refresh Button
-                    Button(action: {
-                        Task {
-                            await viewModel.refreshWallet()
-                        }
-                    }) {
-                        HStack {
-                            if viewModel.isRefreshing {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle())
-                            } else {
-                                Image(systemName: "arrow.clockwise")
+                    HStack(spacing: 12) {
+                        Button(action: {
+                            Task {
+                                await viewModel.refreshWallet()
                             }
-                            Text(viewModel.isRefreshing ? "Refreshing..." : "Refresh Wallet")
+                        }) {
+                            HStack {
+                                if viewModel.isRefreshing {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle())
+                                } else {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                Text(viewModel.isRefreshing ? "Refreshing..." : "Refresh Wallet")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
+                        .disabled(viewModel.isRefreshing)
+
+                        Button(action: {
+                            showReceive = true
+                        }) {
+                            HStack {
+                                Image(systemName: "qrcode")
+                                Text("Receive")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.green.opacity(0.9))
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                        }
                     }
-                    .disabled(viewModel.isRefreshing)
                     .padding(.horizontal)
 
                     if let error = viewModel.errorMessage {
@@ -159,7 +176,10 @@ struct WalletView: View {
                 }
             }
             .sheet(isPresented: $showSettings) {
-                SettingsView()
+                SettingsView(viewModel: viewModel)
+            }
+            .sheet(isPresented: $showReceive) {
+                ReceiveView(viewModel: viewModel)
             }
             .refreshable {
                 await viewModel.refreshWallet()
@@ -169,8 +189,21 @@ struct WalletView: View {
 }
 
 struct SettingsView: View {
-    @State private var nodeAddress: String = MoneroConfig.daemonAddress
+    @ObservedObject var viewModel: WalletViewModel
+    @State private var nodeAddress: String
+    @State private var rescanHeightInput: String
     @Environment(\.dismiss) var dismiss
+
+    init(viewModel: WalletViewModel) {
+        self._viewModel = ObservedObject(initialValue: viewModel)
+        self._nodeAddress = State(initialValue: MoneroConfig.daemonAddress)
+        let heightValue = viewModel.restoreHeight
+        self._rescanHeightInput = State(initialValue: heightValue == 0 ? "" : String(heightValue))
+    }
+
+    private var isRescanInProgress: Bool {
+        viewModel.isRefreshing
+    }
 
     var body: some View {
         NavigationView {
@@ -184,6 +217,24 @@ struct SettingsView: View {
                     Text("Example: 192.168.4.137:18081\n(Full URL will be: http://192.168.4.137:18081)")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                }
+
+                Section(header: Text("Rescan Wallet")) {
+                    TextField("Restore height", text: $rescanHeightInput)
+                        .keyboardType(.numberPad)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+
+                    Button("Rescan from Height") {
+                        initiateRescan()
+                    }
+                    .disabled(parsedRescanHeight() == nil || isRescanInProgress)
+
+                    Button("Full Rescan (from block 0)") {
+                        rescanHeightInput = "0"
+                        initiateRescan()
+                    }
+                    .disabled(isRescanInProgress)
                 }
             }
             .navigationTitle("Settings")
@@ -200,6 +251,22 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func parsedRescanHeight() -> UInt64? {
+        let trimmed = rescanHeightInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let value = UInt64(trimmed) else {
+            return nil
+        }
+        return value
+    }
+
+    private func initiateRescan() {
+        guard let height = parsedRescanHeight() else { return }
+        dismiss()
+        Task {
+            await viewModel.rescan(from: height)
         }
     }
 }
