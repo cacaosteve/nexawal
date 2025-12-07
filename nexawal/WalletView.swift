@@ -10,7 +10,7 @@ import SwiftUI
 struct WalletView: View {
     @ObservedObject var viewModel: WalletViewModel
     @State private var showSettings: Bool = false
-    
+
     var body: some View {
         NavigationView {
             ScrollView {
@@ -20,17 +20,17 @@ struct WalletView: View {
                         Text("Total Balance")
                             .font(.headline)
                             .foregroundColor(.secondary)
-                        
+
                         Text(viewModel.formatXMR(viewModel.piconeroToXMR(viewModel.totalBalance)))
                             .font(.system(size: 36, weight: .bold, design: .monospaced))
                             .foregroundColor(.primary)
-                        
+
                         Divider()
-                        
+
                         Text("Unlocked Balance")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
-                        
+
                         Text(viewModel.formatXMR(viewModel.piconeroToXMR(viewModel.unlockedBalance)))
                             .font(.system(size: 24, weight: .semibold, design: .monospaced))
                             .foregroundColor(.blue)
@@ -40,12 +40,12 @@ struct WalletView: View {
                     .background(Color(.systemGray6))
                     .cornerRadius(16)
                     .padding(.horizontal)
-                    
+
                     // Address Card
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Wallet Address")
                             .font(.headline)
-                        
+
                         Text(viewModel.walletAddress)
                             .font(.system(.caption, design: .monospaced))
                             .padding()
@@ -55,18 +55,49 @@ struct WalletView: View {
                             .textSelection(.enabled)
                     }
                     .padding(.horizontal)
-                    
+
                     // Status Info
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Last Scanned Height:")
-                            Spacer()
-                            Text("\(viewModel.lastScannedHeight)")
-                                .font(.system(.body, design: .monospaced))
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Sync Status")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Chain Height")
+                                Spacer()
+                                Text("\(viewModel.chainHeight)")
+                                    .font(.system(.body, design: .monospaced))
+                            }
+
+                            HStack {
+                                Text("Last Scanned")
+                                Spacer()
+                                Text("\(viewModel.lastScannedHeight)")
+                                    .font(.system(.body, design: .monospaced))
+                            }
+
+                            if !viewModel.isSynced {
+                                HStack {
+                                    Text("Remaining Blocks")
+                                    Spacer()
+                                    Text("\(viewModel.remainingBlocks)")
+                                        .font(.system(.body, design: .monospaced))
+                                }
+                            }
                         }
-                        
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            ProgressView(value: viewModel.syncProgress)
+                                .progressViewStyle(LinearProgressViewStyle())
+                            Text(viewModel.isSynced ? "Wallet is fully synced" : "Syncing… \(viewModel.remainingBlocks) blocks remaining")
+                                .font(.caption)
+                                .foregroundColor(viewModel.isSynced ? .secondary : .primary)
+                        }
+
                         HStack {
-                            Text("Node:")
+                            Text("Node")
                             Spacer()
                             Text(MoneroConfig.nodeURL())
                                 .font(.system(.caption, design: .monospaced))
@@ -76,7 +107,7 @@ struct WalletView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.horizontal)
-                    
+
                     // Refresh Button
                     Button(action: {
                         Task {
@@ -100,7 +131,7 @@ struct WalletView: View {
                     }
                     .disabled(viewModel.isRefreshing)
                     .padding(.horizontal)
-                    
+
                     if let error = viewModel.errorMessage {
                         ScrollView {
                             Text(error)
@@ -140,7 +171,7 @@ struct WalletView: View {
 struct SettingsView: View {
     @State private var nodeAddress: String = MoneroConfig.daemonAddress
     @Environment(\.dismiss) var dismiss
-    
+
     var body: some View {
         NavigationView {
             Form {
@@ -149,7 +180,7 @@ struct SettingsView: View {
                         .font(.system(.body, design: .monospaced))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                    
+
                     Text("Example: 192.168.4.137:18081\n(Full URL will be: http://192.168.4.137:18081)")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -172,4 +203,3 @@ struct SettingsView: View {
         }
     }
 }
-

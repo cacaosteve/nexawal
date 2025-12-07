@@ -1,97 +1,146 @@
-//
-//  WalletViewModel.swift
-//  nexawal
-//
-//  SwiftUI ViewModel for wallet state management
-//
-
 import Foundation
 import SwiftUI
-import Combine
-
 import MoneroWalletCoreFFI
+import Combine
 
 @MainActor
 class WalletViewModel: ObservableObject {
+    // MARK: - Published properties
+
     @Published var mnemonic: String = ""
     @Published var walletAddress: String = ""
     @Published var totalBalance: UInt64 = 0
     @Published var unlockedBalance: UInt64 = 0
+
     @Published var isLoading: Bool = false
-    @Published var errorMessage: String?
-    @Published var isWalletOpen: Bool = false
-    @Published var lastScannedHeight: UInt64 = 0
     @Published var isRefreshing: Bool = false
+    @Published var isWalletOpen: Bool = false
+    @Published var errorMessage: String?
+
     @Published var biometricsEnabled: Bool = false
+    @Published var restoreHeight: UInt64 = 0
+    @Published var lastScannedHeight: UInt64 = 0
+    @Published var chainHeight: UInt64 = 0
+    @Published var chainTime: UInt64 = 0
+
+    // MARK: - Dependencies
 
     private let walletManager = WalletManager.shared
-    private let walletId = "main_wallet"
     private let storage = WalletStorage.shared
+    private let walletId = "main_wallet"
+
     private var storedMetadata: StoredWalletMetadata?
+    private var isMainnet: Bool = true
+    private var syncStatusPollTask: Task<Void, Never>?
+
+    // MARK: - Computed flags
+
+    var syncProgress: Double {
+        guard chainHeight > restoreHeight else {
+            return chainHeight > 0 && lastScannedHeight >= chainHeight ? 1.0 : 0.0
+        }
+
+        let clampedScanned = min(lastScannedHeight, chainHeight)
+        let workSpan = chainHeight - restoreHeight
+        guard workSpan > 0 else { return 0.0 }
+
+        let completed = clampedScanned > restoreHeight ? (clampedScanned - restoreHeight) : 0
+        return min(1.0, Double(completed) / Double(workSpan))
+    }
+
+    var remainingBlocks: UInt64 {
+        chainHeight > lastScannedHeight ? (chainHeight - lastScannedHeight) : 0
+    }
+
+    var isSynced: Bool {
+        chainHeight > 0 && lastScannedHeight >= chainHeight
+    }
+
+    // MARK: - Init
 
     init() {
         Task { [weak self] in
-            guard let self else { return }
-            await self.loadStoredWalletOnLaunch()
+            await self?.loadStoredWalletOnLaunch()
         }
     }
 
-    /// Convert piconero to XMR
+    // MARK: - Public API
+
     func piconeroToXMR(_ piconero: UInt64) -> Double {
-        return Double(piconero) / 1_000_000_000_000.0
+        Double(piconero) / 1_000_000_000_000.0
     }
 
-    /// Format XMR amount for display
     func formatXMR(_ amount: Double) -> String {
-        if amount >= 1.0 {
-            return String(format: "%.4f XMR", amount)
-        } else if amount >= 0.0001 {
-            return String(format: "%.6f XMR", amount)
-        } else {
+        switch amount {
+        case let value where value >= 1.0:
+            return String(format: "%.4f XMR", value)
+        case let value where value >= 0.0001:
+            return String(format: "%.6f XMR", value)
+        default:
             return String(format: "%.12f XMR", amount)
         }
     }
 
-    /// Create or import a wallet from mnemonic
-    func createWallet(mnemonic: String, restoreHeight: UInt64 = 0, mainnet: Bool = true, requireBiometrics: Bool = false) async {
+    func createWallet(
+        mnemonic rawMnemonic: String,
+        restoreHeight: UInt64 = 0,
+        mainnet: Bool = true,
+        requireBiometrics: Bool = false
+    ) async {
+        let normalizedMnemonic = rawMnemonic
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+
+        guard !normalizedMnemonic.isEmpty else {
+            errorMessage = "Mnemonic cannot be empty."
+            return
+        }
+
         isLoading = true
         errorMessage = nil
 
         do {
-            let address = try await walletManager.derivePrimaryAddress(mnemonic: mnemonic, mainnet: mainnet)
+            let address = try await walletManager.derivePrimaryAddress(
+                mnemonic: normalizedMnemonic,
+                mainnet: mainnet
+            )
 
             try await walletManager.openWallet(
-                mnemonic: mnemonic,
+                mnemonic: normalizedMnemonic,
                 walletId: walletId,
                 restoreHeight: restoreHeight,
                 mainnet: mainnet
             )
 
-            self.mnemonic = mnemonic
-            self.walletAddress = address
-            self.isWalletOpen = true
-            self.biometricsEnabled = requireBiometrics
-            self.lastScannedHeight = 0
-            self.totalBalance = 0
-            self.unlockedBalance = 0
+            isMainnet = mainnet
+            mnemonic = normalizedMnemonic
+            walletAddress = address
+            biometricsEnabled = requireBiometrics
+            self.restoreHeight = restoreHeight
+            lastScannedHeight = restoreHeight
+            chainHeight = restoreHeight
+            chainTime = 0
+            totalBalance = 0
+            unlockedBalance = 0
+            isWalletOpen = true
 
             let metadata = StoredWalletMetadata(
                 walletId: walletId,
                 restoreHeight: restoreHeight,
-                lastScannedHeight: 0,
+                lastScannedHeight: restoreHeight,
+                chainHeight: restoreHeight,
                 totalBalance: 0,
                 unlockedBalance: 0,
                 mainnet: mainnet,
                 biometricsEnabled: requireBiometrics
             )
-
+            storedMetadata = metadata
             do {
                 try await storage.storeWallet(
-                    mnemonic: mnemonic,
+                    mnemonic: normalizedMnemonic,
                     metadata: metadata,
                     requireBiometrics: requireBiometrics
                 )
-                storedMetadata = metadata
             } catch {
                 let message = "Wallet opened, but persistence failed: \(error.localizedDescription)"
                 print("⚠️ \(message)")
@@ -99,7 +148,6 @@ class WalletViewModel: ObservableObject {
             }
 
             await refreshWallet()
-
         } catch {
             errorMessage = error.localizedDescription
             isWalletOpen = false
@@ -108,32 +156,29 @@ class WalletViewModel: ObservableObject {
         isLoading = false
     }
 
-    /// Refresh wallet from the Monero node
     func refreshWallet() async {
         guard isWalletOpen else { return }
 
         isRefreshing = true
         errorMessage = nil
+        startSyncStatusPolling()
+        defer {
+            stopSyncStatusPolling()
+            isRefreshing = false
+        }
 
         do {
-            let scanned = try await walletManager.refreshWallet()
-            lastScannedHeight = scanned
+            let status = try await walletManager.refreshWallet()
+            applySyncStatus(status)
 
             let balance = try await walletManager.getBalance()
-
             totalBalance = balance.total
             unlockedBalance = balance.unlocked
 
-            await persistMetadataUpdate { metadata in
-                metadata.lastScannedHeight = scanned
-                metadata.totalBalance = balance.total
-                metadata.unlockedBalance = balance.unlocked
-            }
+            await persistMetadataUpdate()
         } catch {
             errorMessage = "Refresh failed: \(error.localizedDescription)"
         }
-
-        isRefreshing = false
     }
 
     /// Update balance without refreshing (quick check)
@@ -141,32 +186,111 @@ class WalletViewModel: ObservableObject {
         guard isWalletOpen else { return }
 
         do {
+            if let status = try? await walletManager.getSyncStatus() {
+                applySyncStatus(status)
+            }
+
             let balance = try await walletManager.getBalance()
 
             totalBalance = balance.total
             unlockedBalance = balance.unlocked
 
-            await persistMetadataUpdate { metadata in
-                metadata.totalBalance = balance.total
-                metadata.unlockedBalance = balance.unlocked
-            }
+            await persistMetadataUpdate()
         } catch {
             errorMessage = "Failed to get balance: \(error.localizedDescription)"
         }
     }
 
-    private func persistMetadataUpdate(_ update: (inout StoredWalletMetadata) -> Void) async {
+    func getVersion() -> String {
+        WalletCoreFFIClient.version()
+    }
+
+    // MARK: - Private helpers
+
+    private func startSyncStatusPolling() {
+        syncStatusPollTask?.cancel()
+        syncStatusPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do {
+                    let status = try await self.walletManager.getSyncStatus()
+                    await MainActor.run {
+                        self.applySyncStatus(status)
+                    }
+                } catch {
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+        }
+    }
+
+    private func stopSyncStatusPolling() {
+        syncStatusPollTask?.cancel()
+        syncStatusPollTask = nil
+    }
+
+    private func applySyncStatus(_ status: WalletCoreFFIClient.SyncStatus) {
+        let normalizedChainHeight = max(status.chainHeight, status.restoreHeight, status.lastScanned)
+        let normalizedLastScanned = min(max(status.lastScanned, status.restoreHeight), normalizedChainHeight)
+
+        chainHeight = max(chainHeight, normalizedChainHeight)
+        if status.chainTime > 0 {
+            chainTime = status.chainTime
+        }
+        restoreHeight = max(restoreHeight, status.restoreHeight)
+        lastScannedHeight = min(max(lastScannedHeight, normalizedLastScanned), chainHeight)
+    }
+
+    private func applyMetadataSnapshot(_ metadata: StoredWalletMetadata) async {
+        var snapshot = metadata
+        let normalizedChainHeight = max(snapshot.chainHeight, snapshot.lastScannedHeight, snapshot.restoreHeight)
+        let normalizedLastScanned = min(max(snapshot.lastScannedHeight, snapshot.restoreHeight), normalizedChainHeight)
+
+        snapshot.chainHeight = normalizedChainHeight
+        snapshot.lastScannedHeight = normalizedLastScanned
+
+        storedMetadata = snapshot
+
+        restoreHeight = max(restoreHeight, snapshot.restoreHeight)
+        chainHeight = max(chainHeight, snapshot.chainHeight)
+        lastScannedHeight = min(max(lastScannedHeight, snapshot.lastScannedHeight), chainHeight)
+        totalBalance = snapshot.totalBalance
+        unlockedBalance = snapshot.unlockedBalance
+        biometricsEnabled = snapshot.biometricsEnabled
+        chainTime = 0
+        isMainnet = snapshot.mainnet
+
+        do {
+            try await storage.saveMetadataOnly(snapshot)
+        } catch WalletStorageError.walletNotStored {
+            // Ignore: nothing persisted yet.
+        } catch {
+            print("⚠️ Failed to persist normalized metadata: \(error)")
+        }
+    }
+
+    private func persistMetadataUpdate(_ mutate: ((inout StoredWalletMetadata) -> Void)? = nil) async {
         do {
             if storedMetadata == nil {
                 storedMetadata = try await storage.loadMetadata()
             }
             guard var metadata = storedMetadata else { return }
-            update(&metadata)
+
+            mutate?(&metadata)
+            metadata.totalBalance = totalBalance
+            metadata.unlockedBalance = unlockedBalance
+            metadata.lastScannedHeight = lastScannedHeight
+            metadata.restoreHeight = restoreHeight
+            metadata.chainHeight = max(chainHeight, max(lastScannedHeight, restoreHeight))
+            metadata.biometricsEnabled = biometricsEnabled
+            metadata.mainnet = isMainnet
             metadata.lastUpdated = Date()
+
             storedMetadata = metadata
             try await storage.saveMetadataOnly(metadata)
         } catch WalletStorageError.walletNotStored {
-            // Nothing to persist yet
+            // Nothing to persist yet.
         } catch {
             print("⚠️ Metadata persistence failed: \(error)")
         }
@@ -179,14 +303,17 @@ class WalletViewModel: ObservableObject {
             }
 
             isLoading = true
-            defer { isLoading = false }
-
             errorMessage = nil
-            storedMetadata = metadata
-            biometricsEnabled = metadata.biometricsEnabled
+            await applyMetadataSnapshot(metadata)
 
             let mnemonic = try await storage.loadMnemonic(prompt: "Authenticate to unlock NexaWal")
-            let address = try await walletManager.derivePrimaryAddress(mnemonic: mnemonic, mainnet: metadata.mainnet)
+            self.mnemonic = mnemonic
+
+            let address = try await walletManager.derivePrimaryAddress(
+                mnemonic: mnemonic,
+                mainnet: metadata.mainnet
+            )
+            walletAddress = address
 
             try await walletManager.openWallet(
                 mnemonic: mnemonic,
@@ -195,30 +322,25 @@ class WalletViewModel: ObservableObject {
                 mainnet: metadata.mainnet
             )
 
-            self.mnemonic = mnemonic
-            self.walletAddress = address
-            self.totalBalance = metadata.totalBalance
-            self.unlockedBalance = metadata.unlockedBalance
-            self.lastScannedHeight = metadata.lastScannedHeight
-            self.isWalletOpen = true
+            isWalletOpen = true
+
+            if let status = try? await walletManager.getSyncStatus() {
+                applySyncStatus(status)
+                await persistMetadataUpdate()
+            }
 
             await refreshWallet()
         } catch let storageError as WalletStorageError {
             switch storageError {
             case .cancelled:
                 errorMessage = nil
-                return
             default:
                 errorMessage = storageError.localizedDescription
             }
         } catch {
             print("⚠️ Failed to load stored wallet: \(error)")
         }
-    }
 
-    /// Get WalletCore version
-    func getVersion() -> String {
-        // getVersion() is safe to call synchronously as it doesn't access actor state
-        return WalletCoreFFIClient.version()
+        isLoading = false
     }
 }

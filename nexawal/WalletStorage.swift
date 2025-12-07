@@ -44,6 +44,7 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
     let walletId: String
     var restoreHeight: UInt64
     var lastScannedHeight: UInt64
+    var chainHeight: UInt64 = 0
     var totalBalance: UInt64 = 0
     var unlockedBalance: UInt64 = 0
     var mainnet: Bool
@@ -54,6 +55,7 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
     init(walletId: String,
          restoreHeight: UInt64,
          lastScannedHeight: UInt64,
+         chainHeight: UInt64 = 0,
          totalBalance: UInt64 = 0,
          unlockedBalance: UInt64 = 0,
          mainnet: Bool,
@@ -63,6 +65,7 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
         self.walletId = walletId
         self.restoreHeight = restoreHeight
         self.lastScannedHeight = lastScannedHeight
+        self.chainHeight = chainHeight
         self.totalBalance = totalBalance
         self.unlockedBalance = unlockedBalance
         self.mainnet = mainnet
@@ -75,6 +78,7 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
         case walletId
         case restoreHeight
         case lastScannedHeight
+        case chainHeight
         case totalBalance
         case unlockedBalance
         case mainnet
@@ -88,6 +92,7 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
         walletId = try container.decode(String.self, forKey: .walletId)
         restoreHeight = try container.decodeIfPresent(UInt64.self, forKey: .restoreHeight) ?? 0
         lastScannedHeight = try container.decodeIfPresent(UInt64.self, forKey: .lastScannedHeight) ?? 0
+        chainHeight = try container.decodeIfPresent(UInt64.self, forKey: .chainHeight) ?? 0
         totalBalance = try container.decodeIfPresent(UInt64.self, forKey: .totalBalance) ?? 0
         unlockedBalance = try container.decodeIfPresent(UInt64.self, forKey: .unlockedBalance) ?? 0
         mainnet = try container.decodeIfPresent(Bool.self, forKey: .mainnet) ?? true
@@ -102,6 +107,7 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
         try container.encode(walletId, forKey: .walletId)
         try container.encode(restoreHeight, forKey: .restoreHeight)
         try container.encode(lastScannedHeight, forKey: .lastScannedHeight)
+        try container.encode(chainHeight, forKey: .chainHeight)
         try container.encode(totalBalance, forKey: .totalBalance)
         try container.encode(unlockedBalance, forKey: .unlockedBalance)
         try container.encode(mainnet, forKey: .mainnet)
