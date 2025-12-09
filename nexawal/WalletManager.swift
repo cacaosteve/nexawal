@@ -41,6 +41,9 @@ actor WalletManager {
     private var currentWalletId: String?
     private var cachedBalance: (total: UInt64, unlocked: UInt64)?
     private var refreshInProgress: Bool = false
+    private var refreshPar: Int = 0
+    private var refreshBatch: Int = 0
+    private var currentNetworkMainnet: Bool = true
 
     private init() {}
 
@@ -63,8 +66,10 @@ actor WalletManager {
                 walletId: walletId,
                 gapLimit: MoneroConfig.gapLimit
             )
+            currentNetworkMainnet = mainnet
             currentWalletId = walletId
             cachedBalance = nil // Clear cached balance
+            importCacheIfPresent(for: walletId)
         } catch {
             throw WalletError.walletOpenFailed(error.localizedDescription)
         }
@@ -87,11 +92,12 @@ actor WalletManager {
 
         applyNetworkProxy()
         applyScanTuning()
-        let nodeURL = MoneroConfig.nodeURL()
+        let nodeURL = MoneroConfig.scanNodeURL()
         defer { refreshInProgress = false }
 
         do {
             let status = try await performRefresh(walletId: walletId, nodeURL: nodeURL)
+            exportCacheAndPersist(for: walletId)
             cachedBalance = nil
             return status
         } catch let nodeError {
@@ -110,11 +116,13 @@ actor WalletManager {
                     }
                     print("↩️ Parallel stall detected; falling back to sequential scan (par=0, batch=150) and retrying on same node...")
                     let seqStatus = try await performRefresh(walletId: walletId, nodeURL: nodeURL)
+                    exportCacheAndPersist(for: walletId)
                     cachedBalance = nil
                     return seqStatus
                 }
                 print("⚠️ Attempting refresh without nodeURL (using wallet core default)...")
                 let fallbackStatus = try await performRefresh(walletId: walletId, nodeURL: nil)
+                exportCacheAndPersist(for: walletId)
                 cachedBalance = nil
                 print("✅ Refresh succeeded using wallet core default node")
                 return fallbackStatus
@@ -184,8 +192,8 @@ actor WalletManager {
         var lastProgressAt = Date()
         var lastScannedSnapshot: UInt64 = 0
         // Scale stall timeout based on scan tuning
-        let par = MoneroConfig.scanParallelism
-        let batch = MoneroConfig.scanBatchSize
+        let par = refreshPar
+        let batch = refreshBatch
         // Base on user-provided stallTimeout, but expand for larger batches and parallelism
         var dynamicStallTimeout = max(
             stallTimeout,
@@ -202,20 +210,22 @@ actor WalletManager {
                 print("🧭 Refresh target height set to \(targetHeight!) (restoreHeight=\(status.restoreHeight))")
             }
 
-            // Compute the effective target (never below restore height)
-            let effectiveTarget = max(targetHeight ?? status.chainHeight, status.restoreHeight)
+            // Only compute effective target after targetHeight is known (daemon reported > restore)
+            if let target = targetHeight {
+                let effectiveTarget = max(target, status.restoreHeight)
 
-            // Check for completion against the fixed target height
-            if effectiveTarget > 0, status.lastScanned >= effectiveTarget {
-                print("✅ Refresh reached target height \(effectiveTarget) (lastScanned=\(status.lastScanned))")
-                return status
-            }
+                // Check for completion against the fixed target height
+                if effectiveTarget > 0, status.lastScanned >= effectiveTarget {
+                    print("✅ Refresh reached target height \(effectiveTarget) (lastScanned=\(status.lastScanned))")
+                    return status
+                }
 
-            // Accept near-target within a small tolerance to avoid hanging on a moving tip
-            if effectiveTarget > 0,
-               status.lastScanned + toleranceBlocks >= effectiveTarget {
-                print("⚠️ Refresh within tolerance (\(toleranceBlocks)) of target \(effectiveTarget); proceeding (lastScanned=\(status.lastScanned))")
-                return status
+                // Accept near-target within a small tolerance to avoid hanging on a moving tip
+                if effectiveTarget > 0,
+                   status.lastScanned + toleranceBlocks >= effectiveTarget {
+                    print("⚠️ Refresh within tolerance (\(toleranceBlocks)) of target \(effectiveTarget); proceeding (lastScanned=\(status.lastScanned))")
+                    return status
+                }
             }
 
             // Track progress and detect stalls
@@ -223,7 +233,7 @@ actor WalletManager {
                 lastScannedSnapshot = status.lastScanned
                 lastProgressAt = Date()
                 // Periodic progress log
-                print("⏳ Refresh progress: scanned=\(status.lastScanned), target=\(effectiveTarget), tip=\(status.chainHeight)")
+                print("⏳ Refresh progress: scanned=\(status.lastScanned), target=\(targetHeight ?? status.chainHeight), tip=\(status.chainHeight)")
             }
 
             // Timeout with detailed context
@@ -234,12 +244,21 @@ actor WalletManager {
                 }
             }
 
-            // Stall-based handling: extend patience dynamically instead of failing/restarting
-                        if Date().timeIntervalSince(lastProgressAt) > dynamicStallTimeout {
-                            print("⌛️ No progress for \(Int(dynamicStallTimeout))s; extending stall timeout and continuing (par=\(par), batch=\(batch))")
-                            dynamicStallTimeout = min(dynamicStallTimeout * 1.5, 600.0) // backoff up to 10 minutes
-                            lastProgressAt = Date() // reset stall clock and keep waiting
-                        }
+            // Stall-based handling: on first stall, fallback to reliable sequential scan and continue
+                                    if Date().timeIntervalSince(lastProgressAt) > dynamicStallTimeout {
+                                        print("↩️ Stall detected (>\(Int(dynamicStallTimeout))s). Falling back to sequential scan (par=0, batch=150) and retrying…")
+                                        await MoneroConfig.recordParallelStallForCurrentNode()
+                                        await MoneroConfig.setScanParallelism(0)
+                                        await MoneroConfig.setScanBatchSize(150)
+                                        refreshPar = 0
+                                        refreshBatch = 150
+                                        // Restart background refresh with safer tuning
+                                        try WalletCoreFFIClient.refreshWalletAsync(walletId: walletId, nodeURL: MoneroConfig.scanNodeURL())
+                                        // Reset stall clock and give the sequential path time
+                                        lastProgressAt = Date()
+                                        dynamicStallTimeout = max(60.0, dynamicStallTimeout)
+                                        continue
+                                    }
 
             let interval = max(pollInterval, 0.05)
             let nanoseconds = UInt64(interval * 1_000_000_000)
@@ -278,9 +297,94 @@ actor WalletManager {
         return msg.contains("parallel worker stalled") || msg.contains("parallel worker channel closed unexpectedly")
     }
 
+    /// Import a previously exported core cache blob for this wallet, if present.
+    /// - Migration note: also migrates any legacy cache stored in UserDefaults to a file.
+    private func importCacheIfPresent(for walletId: String) {
+        // 1) Migrate legacy cache (UserDefaults -> file)
+        let legacyKey = "wallet_cache_\(walletId)"
+        if let legacyBlob = UserDefaults.standard.data(forKey: legacyKey) {
+            do {
+                let fileURL = cacheFileURL(for: walletId)
+                try ensureCacheDirectory()
+                try legacyBlob.write(to: fileURL, options: .atomic)
+                try excludeFromBackup(url: fileURL)
+                UserDefaults.standard.removeObject(forKey: legacyKey)
+                print("🗂️ Migrated legacy cache to file (\(legacyBlob.count) bytes) at \(fileURL.lastPathComponent)")
+            } catch {
+                print("⚠️ Legacy cache migration failed for \(walletId): \(error.localizedDescription)")
+            }
+        }
+
+        // 2) Import from file if present
+        let fileURL = cacheFileURL(for: walletId)
+        do {
+            let data = try Data(contentsOf: fileURL)
+            try WalletCoreFFIClient.importCache(walletId: walletId, cacheBlob: data)
+            print("🗂️ Imported wallet cache (\(data.count) bytes) for \(walletId) from file")
+        } catch {
+            // File may not exist on first run; ignore not found, log others
+            if (error as NSError).domain != NSCocoaErrorDomain || (error as NSError).code != NSFileReadNoSuchFileError {
+                print("⚠️ Cache import (file) failed for \(walletId): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Export the core cache blob and persist it to Application Support for fast resume across launches.
+    private func exportCacheAndPersist(for walletId: String) {
+        do {
+            guard let data = try WalletCoreFFIClient.exportCache(walletId: walletId) else {
+                print("🗂️ Exported wallet cache is empty for \(walletId)")
+                return
+            }
+            try ensureCacheDirectory()
+            let fileURL = cacheFileURL(for: walletId)
+            try data.write(to: fileURL, options: .atomic)
+            try excludeFromBackup(url: fileURL)
+            print("🗂️ Exported wallet cache (\(data.count) bytes) to \(fileURL.lastPathComponent) for \(walletId)")
+        } catch {
+            print("⚠️ Cache export failed for \(walletId): \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Cache file utilities
+
+    /// Directory used to store wallet cache blobs.
+    private func cacheDirectoryURL() -> URL {
+        let fm = FileManager.default
+        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        // Namespace for NexaWal caches with per-network subdirectory
+        let netDir = currentNetworkMainnet ? "mainnet" : "stagenet"
+        return appSupport
+            .appendingPathComponent("WalletCaches", isDirectory: true)
+            .appendingPathComponent(netDir, isDirectory: true)
+    }
+
+    /// Full path for a wallet's cache blob.
+    private func cacheFileURL(for walletId: String) -> URL {
+        cacheDirectoryURL().appendingPathComponent("\(walletId).cache")
+    }
+
+    /// Ensure the cache directory exists and is excluded from backups.
+    private func ensureCacheDirectory() throws {
+        let fm = FileManager.default
+        let dir = cacheDirectoryURL()
+        if !fm.fileExists(atPath: dir.path) {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
+        }
+        try excludeFromBackup(url: dir)
+    }
+
+    /// Mark a URL (file or directory) as excluded from iCloud backups.
+    private func excludeFromBackup(url: URL) throws {
+        var resourceValues = URLResourceValues()
+        resourceValues.isExcludedFromBackup = true
+        var mutableURL = url
+        try mutableURL.setResourceValues(resourceValues)
+    }
+
     /// Apply HTTP proxy environment for I2P mode
     private func applyNetworkProxy() {
-        if MoneroConfig.useI2P, let proxy = MoneroConfig.i2pHTTPProxyAddress, !proxy.isEmpty {
+        if MoneroConfig.networkPolicy == .i2p, let proxy = MoneroConfig.i2pHTTPProxyAddress, !proxy.isEmpty {
             let proxyURL = "http://\(proxy)"
             setenv("HTTP_PROXY", proxyURL, 1)
             setenv("http_proxy", proxyURL, 1)
@@ -298,8 +402,13 @@ actor WalletManager {
 
     /// Apply scan tuning (parallelism and batch) via environment variables
     private func applyScanTuning() {
-        let par = MoneroConfig.scanParallelism
-        let batch = MoneroConfig.scanBatchSize
+        let tuning = MoneroConfig.chooseTuningForCurrentNode()
+        let par = max(0, min(tuning.par, 64))
+        let batch = max(50, min(tuning.batch, 5000))
+
+        // Persist chosen tuning for this refresh so logs and stall logic are consistent
+        refreshPar = par
+        refreshBatch = batch
 
         if par > 0 {
             setenv("WALLETCORE_SCAN_PAR", "\(par)", 1)
@@ -307,10 +416,83 @@ actor WalletManager {
             unsetenv("WALLETCORE_SCAN_PAR")
         }
 
-        if batch > 0 {
-            setenv("WALLETCORE_SCAN_BATCH", "\(batch)", 1)
+        setenv("WALLETCORE_SCAN_BATCH", "\(batch)", 1)
+        print("🔧 Scan tuning applied: par=\(par) batch=\(batch)")
+    }
+
+    // Clear on-disk scan cache for current wallet (per network).
+    // Removes per-network cache file and any legacy cache stored in UserDefaults.
+    func clearScanCache() throws {
+        guard let walletId = currentWalletId else {
+            throw WalletError.refreshFailed("No wallet is currently open")
+        }
+        let fm = FileManager.default
+        let fileURL = cacheFileURL(for: walletId)
+
+        // Remove cache file if present
+        if fm.fileExists(atPath: fileURL.path) {
+            try fm.removeItem(at: fileURL)
+            print("🗂️ Cleared wallet cache at \(fileURL.lastPathComponent) for \(walletId)")
         } else {
-            unsetenv("WALLETCORE_SCAN_BATCH")
+            print("🗂️ No cache file to clear for \(walletId)")
+        }
+
+        // Remove any legacy cache blob in UserDefaults
+        let legacyKey = "wallet_cache_\(walletId)"
+        if UserDefaults.standard.object(forKey: legacyKey) != nil {
+            UserDefaults.standard.removeObject(forKey: legacyKey)
+            print("🗂️ Removed legacy cache blob for \(walletId)")
+        }
+    }
+
+    /// Estimate fee for a single-destination transfer using current broadcast policy.
+    func previewFee(toAddress: String, amountPiconero: UInt64, ringLen: UInt8 = 16) throws -> UInt64 {
+        guard let walletId = currentWalletId else {
+            throw WalletError.statusFailed("No wallet is currently open")
+        }
+        applyBroadcastProxy()
+        let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
+        let fee = try WalletCoreFFIClient.previewFee(
+            walletId: walletId,
+            destinations: [dest],
+            ringLen: ringLen,
+            nodeURL: MoneroConfig.broadcastNodeURL()
+        )
+        return fee
+    }
+
+    /// Send to a single destination honoring broadcast policy (clearnet, I2P, or hybrid).
+    func send(toAddress: String, amountPiconero: UInt64, ringLen: UInt8 = 16) throws -> (txid: String, fee: UInt64) {
+        guard let walletId = currentWalletId else {
+            throw WalletError.statusFailed("No wallet is currently open")
+        }
+        applyBroadcastProxy()
+        let result = try WalletCoreFFIClient.send(
+            walletId: walletId,
+            toAddress: toAddress,
+            amountPiconero: amountPiconero,
+            ringLen: ringLen,
+            nodeURL: MoneroConfig.broadcastNodeURL()
+        )
+        return result
+    }
+
+    /// Apply proxy settings for broadcast path (I2P only or hybrid).
+    private func applyBroadcastProxy() {
+        let policy = MoneroConfig.networkPolicy
+        if (policy == .i2p || policy == .hybrid), let proxy = MoneroConfig.i2pHTTPProxyAddress, !proxy.isEmpty {
+            let proxyURL = "http://\(proxy)"
+            setenv("HTTP_PROXY", proxyURL, 1)
+            setenv("http_proxy", proxyURL, 1)
+            setenv("ALL_PROXY", proxyURL, 1)
+            setenv("all_proxy", proxyURL, 1)
+            unsetenv("NO_PROXY")
+            unsetenv("no_proxy")
+        } else {
+            unsetenv("HTTP_PROXY")
+            unsetenv("http_proxy")
+            unsetenv("ALL_PROXY")
+            unsetenv("all_proxy")
         }
     }
 }

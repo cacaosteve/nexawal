@@ -12,6 +12,7 @@ struct WalletView: View {
     @ObservedObject var viewModel: WalletViewModel
     @State private var showSettings: Bool = false
     @State private var showReceive: Bool = false
+    @State private var showSend: Bool = false
 
     var body: some View {
         NavigationView {
@@ -93,28 +94,52 @@ struct WalletView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             ProgressView(value: viewModel.syncProgress)
                                 .progressViewStyle(LinearProgressViewStyle())
-                            Text(viewModel.isSynced ? "Wallet is fully synced" : "Syncing… \(viewModel.remainingBlocks) blocks remaining")
+                            Text(
+                                viewModel.isSynced
+                                ? "Wallet is fully synced"
+                                : (
+                                    viewModel.remainingBlocks <= 5
+                                    ? "Finalizing…"
+                                    : (
+                                        (viewModel.chainHeight == 0 || viewModel.lastScannedHeight == viewModel.restoreHeight)
+                                        ? "Initializing scan…"
+                                        : "Syncing… \(viewModel.remainingBlocks) blocks remaining"
+                                    )
+                                )
+                            )
                                 .font(.caption)
-                                .foregroundColor(viewModel.isSynced ? .secondary : .primary)
+                                .foregroundColor(
+                                    viewModel.isSynced
+                                    ? .secondary
+                                    : (viewModel.remainingBlocks <= 5 ? .secondary : .primary)
+                                )
                         }
 
                         HStack {
-                            Text("Mode")
+                            Text("Policy")
                             Spacer()
-                            Text(MoneroConfig.useI2P ? "I2P" : "Clearnet")
+                            Text(MoneroConfig.networkPolicy == .clearnet ? "Clearnet only" : (MoneroConfig.networkPolicy == .i2p ? "I2P only" : "Scan clearnet, broadcast I2P"))
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }
 
                         HStack {
-                            Text("Node")
+                            Text("Scan")
                             Spacer()
-                            Text(MoneroConfig.nodeURL())
+                            Text(MoneroConfig.scanNodeURL())
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }
 
-                        if MoneroConfig.useI2P, let proxy = MoneroConfig.i2pHTTPProxyAddress {
+                        HStack {
+                            Text("Broadcast")
+                            Spacer()
+                            Text(MoneroConfig.broadcastNodeURL())
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+
+                        if (MoneroConfig.networkPolicy == .i2p || MoneroConfig.networkPolicy == .hybrid), let proxy = MoneroConfig.i2pHTTPProxyAddress {
                             HStack {
                                 Text("I2P Proxy")
                                 Spacer()
@@ -151,6 +176,20 @@ struct WalletView: View {
                             .cornerRadius(12)
                         }
                         .disabled(viewModel.isRefreshing)
+
+                        Button(action: {
+                            showSend = true
+                        }) {
+                            HStack {
+                                Image(systemName: "paperplane.fill")
+                                Text("Send")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.orange.opacity(0.9))
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                        }
 
                         Button(action: {
                             showReceive = true
@@ -200,6 +239,9 @@ struct WalletView: View {
             .sheet(isPresented: $showReceive) {
                 ReceiveView(viewModel: viewModel)
             }
+            .sheet(isPresented: $showSend) {
+                SendView(viewModel: viewModel)
+            }
             .refreshable {
                 await viewModel.refreshWallet()
             }
@@ -215,6 +257,8 @@ struct SettingsView: View {
     @State private var i2pRPCAddress: String
     @State private var i2pProxyAddress: String
     @State private var gapLimitInput: String
+    @State private var scanModeIsAuto: Bool
+    @State private var networkPolicyIndex: Int
     @State private var parInput: String
     @State private var batchInput: String
     @Environment(\.dismiss) var dismiss
@@ -228,6 +272,14 @@ struct SettingsView: View {
         let heightValue = viewModel.restoreHeight
         self._rescanHeightInput = State(initialValue: heightValue == 0 ? "" : String(heightValue))
         self._gapLimitInput = State(initialValue: String(MoneroConfig.gapLimit))
+        self._scanModeIsAuto = State(initialValue: MoneroConfig.scanMode == .auto)
+        let policyIndex: Int
+        switch MoneroConfig.networkPolicy {
+        case .clearnet: policyIndex = 0
+        case .i2p: policyIndex = 1
+        case .hybrid: policyIndex = 2
+        }
+        self._networkPolicyIndex = State(initialValue: policyIndex)
         self._parInput = State(initialValue: String(MoneroConfig.scanParallelism))
         self._batchInput = State(initialValue: String(MoneroConfig.scanBatchSize))
     }
@@ -240,9 +292,32 @@ struct SettingsView: View {
         NavigationView {
             Form {
                 Section(header: Text("Network & Node")) {
-                    Toggle("Use I2P", isOn: $useI2P)
+                    Picker("Network Policy", selection: $networkPolicyIndex) {
+                        Text("Clearnet only").tag(0)
+                        Text("I2P only").tag(1)
+                        Text("Scan clearnet, broadcast I2P").tag(2)
+                    }
+                    .pickerStyle(.segmented)
 
-                    if useI2P {
+                    Group {
+                        let scanDesc = (networkPolicyIndex == 1) ? "I2P" : "clearnet"
+                        let broadcastDesc = (networkPolicyIndex == 0) ? "clearnet" : "I2P"
+                        Text("Scanning over \(scanDesc); broadcasting over \(broadcastDesc).")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    if networkPolicyIndex == 0 || networkPolicyIndex == 2 {
+                        TextField("Clearnet hostname:port", text: $nodeAddress)
+                            .font(.system(.body, design: .monospaced))
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        Text("Example: 192.168.4.137:18081\n(Full URL will be: http://192.168.4.137:18081)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    if networkPolicyIndex == 1 || networkPolicyIndex == 2 {
                         TextField("I2P RPC (.b32.i2p:port)", text: $i2pRPCAddress)
                             .font(.system(.body, design: .monospaced))
                             .autocorrectionDisabled()
@@ -258,17 +333,9 @@ struct SettingsView: View {
                         Text("Example: 192.168.4.137:4444")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                    } else {
-                        TextField("Clearnet hostname:port", text: $nodeAddress)
-                            .font(.system(.body, design: .monospaced))
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        Text("Example: 192.168.4.137:18081\n(Full URL will be: http://192.168.4.137:18081)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
                     }
-
                     Section(header: Text("Scanning")) {
+                        Toggle("Scan Mode: Auto", isOn: $scanModeIsAuto)
                         TextField("Gap limit (1-100000)", text: $gapLimitInput)
                             .keyboardType(.numberPad)
                             .autocorrectionDisabled()
@@ -276,19 +343,31 @@ struct SettingsView: View {
                         Text("Controls how many subaddresses are scanned")
                             .font(.caption)
                             .foregroundColor(.secondary)
+
+                        Button(role: .destructive) {
+                            do {
+                                try WalletManager.shared.clearScanCache()
+                            } catch {
+                                print("⚠️ Clear cache failed: \(error)")
+                            }
+                        } label: {
+                            Text("Clear scan cache (this network)")
+                        }
                     }
-                    Section(header: Text("Advanced Scan Tuning")) {
-                        TextField("Parallel workers (0-64)", text: $parInput)
-                            .keyboardType(.numberPad)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        TextField("Batch size (50-5000)", text: $batchInput)
-                            .keyboardType(.numberPad)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        Text("Increase speed on catch-up. Start with 6 workers and 600 batch. 0 workers disables parallelism.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                    if !scanModeIsAuto {
+                        Section(header: Text("Advanced Scan Tuning")) {
+                            TextField("Parallel workers (0-64)", text: $parInput)
+                                .keyboardType(.numberPad)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                            TextField("Batch size (50-5000)", text: $batchInput)
+                                .keyboardType(.numberPad)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                            Text("Increase speed on catch-up. Start with 6 workers and 600 batch. 0 workers disables parallelism.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
 
@@ -319,14 +398,22 @@ struct SettingsView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        if useI2P {
-                            MoneroConfig.setUseI2P(true)
-                            MoneroConfig.setI2PRPCAddress(i2pRPCAddress)
-                            MoneroConfig.setI2PHTTPProxyAddress(i2pProxyAddress)
-                        } else {
-                            MoneroConfig.setUseI2P(false)
+                        switch networkPolicyIndex {
+                        case 0: // Clearnet only
+                            MoneroConfig.setNetworkPolicy(.clearnet)
                             MoneroConfig.setDaemonAddress(nodeAddress)
                             MoneroConfig.setI2PHTTPProxyAddress(nil)
+                        case 1: // I2P only
+                            MoneroConfig.setNetworkPolicy(.i2p)
+                            MoneroConfig.setI2PRPCAddress(i2pRPCAddress)
+                            MoneroConfig.setI2PHTTPProxyAddress(i2pProxyAddress)
+                        case 2: // Hybrid (scan clearnet, broadcast I2P)
+                            MoneroConfig.setNetworkPolicy(.hybrid)
+                            MoneroConfig.setDaemonAddress(nodeAddress)
+                            MoneroConfig.setI2PRPCAddress(i2pRPCAddress)
+                            MoneroConfig.setI2PHTTPProxyAddress(i2pProxyAddress)
+                        default:
+                            break
                         }
                         if let gap = parsedGapLimit() {
                             MoneroConfig.setGapLimit(gap)
@@ -336,13 +423,17 @@ struct SettingsView: View {
                                 }
                             }
                         }
-                        if let p = Int(parInput) {
-                            let clamped = max(0, min(p, 64))
-                            MoneroConfig.setScanParallelism(clamped)
-                        }
-                        if let b = Int(batchInput) {
-                            let clamped = max(50, min(b, 5000))
-                            MoneroConfig.setScanBatchSize(clamped)
+                        // Scan mode and tuning
+                        MoneroConfig.setScanMode(scanModeIsAuto ? .auto : .manual)
+                        if !scanModeIsAuto {
+                            if let p = Int(parInput) {
+                                let clamped = max(0, min(p, 64))
+                                MoneroConfig.setScanParallelism(clamped)
+                            }
+                            if let b = Int(batchInput) {
+                                let clamped = max(50, min(b, 5000))
+                                MoneroConfig.setScanBatchSize(clamped)
+                            }
                         }
                         dismiss()
                     }
