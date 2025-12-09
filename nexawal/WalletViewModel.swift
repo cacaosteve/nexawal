@@ -337,18 +337,12 @@ class WalletViewModel: ObservableObject {
         let normalizedRestoreHeight = min(status.restoreHeight, normalizedChainHeight)
         let normalizedLastScanned = min(max(status.lastScanned, normalizedRestoreHeight), normalizedChainHeight)
 
-        let updatedChainHeight = max(chainHeight, normalizedChainHeight)
-        let updatedRestoreHeight = min(max(restoreHeight, normalizedRestoreHeight), updatedChainHeight)
-        let candidateLastScanned = max(lastScannedHeight, normalizedLastScanned)
-        let clampedLastScanned = max(candidateLastScanned, updatedRestoreHeight)
-        let updatedLastScanned = min(clampedLastScanned, updatedChainHeight)
-
-        chainHeight = updatedChainHeight
+        chainHeight = normalizedChainHeight
         if status.chainTime > 0 {
             chainTime = status.chainTime
         }
-        restoreHeight = updatedRestoreHeight
-        lastScannedHeight = updatedLastScanned
+        restoreHeight = normalizedRestoreHeight
+        lastScannedHeight = normalizedLastScanned
     }
 
     private func applyMetadataSnapshot(_ metadata: StoredWalletMetadata) async {
@@ -363,15 +357,9 @@ class WalletViewModel: ObservableObject {
 
         storedMetadata = snapshot
 
-        let updatedChainHeight = max(chainHeight, normalizedChainHeight)
-        let updatedRestoreHeight = min(max(restoreHeight, normalizedRestoreHeight), updatedChainHeight)
-        let candidateLastScanned = max(lastScannedHeight, normalizedLastScanned)
-        let clampedLastScanned = max(candidateLastScanned, updatedRestoreHeight)
-        let updatedLastScanned = min(clampedLastScanned, updatedChainHeight)
-
-        restoreHeight = updatedRestoreHeight
-        chainHeight = updatedChainHeight
-        lastScannedHeight = updatedLastScanned
+        restoreHeight = normalizedRestoreHeight
+        chainHeight = normalizedChainHeight
+        lastScannedHeight = normalizedLastScanned
         totalBalance = snapshot.totalBalance
         unlockedBalance = snapshot.unlockedBalance
         biometricsEnabled = snapshot.biometricsEnabled
