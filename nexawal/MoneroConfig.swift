@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Darwin
 
 struct MoneroConfig {
     nonisolated(unsafe) static let defaultAddress = "192.168.4.137:18081"
@@ -25,6 +26,9 @@ struct MoneroConfig {
         nonisolated(unsafe) static let userDefaultsScanBatchKey = "walletcore_scan_batch"
         nonisolated(unsafe) static let defaultScanPar: Int = 0
         nonisolated(unsafe) static let defaultScanBatch: Int = 200
+        // Account lookahead (major) key and default
+        nonisolated(unsafe) static let userDefaultsAccountGapKey = "walletcore_account_gap"
+        nonisolated(unsafe) static let defaultAccountGap: Int = 1
         // Network policy keys and defaults (clearnet only, i2p only, hybrid: scan clearnet, broadcast i2p)
         nonisolated(unsafe) static let userDefaultsNetworkPolicyKey = "monero_network_policy"
         nonisolated(unsafe) static let defaultNetworkPolicyRaw = "clearnet"
@@ -77,7 +81,9 @@ struct MoneroConfig {
 
         // Effective scan/broadcast URLs
         nonisolated static func scanNodeURL() -> String {
-            urlFromAddress(scanNodeAddress())
+            // Apply account lookahead to core via environment for the scanning path
+            setenv("WALLETCORE_ACCOUNT_GAP", "\(accountGap)", 1)
+            return urlFromAddress(scanNodeAddress())
         }
 
         nonisolated static func broadcastNodeURL() -> String {
@@ -173,6 +179,21 @@ struct MoneroConfig {
     static func setGapLimit(_ limit: UInt32) {
         let clamped = min(max(limit, 1), 100_000)
         UserDefaults.standard.set(Int(clamped), forKey: userDefaultsGapLimitKey)
+    }
+
+    /// Major account lookahead (number of accounts to scan starting from 0). Default is 1 (account 0 only).
+    /// Stored in UserDefaults under userDefaultsAccountGapKey
+    nonisolated static var accountGap: Int {
+        let v = UserDefaults.standard.integer(forKey: userDefaultsAccountGapKey)
+        let value = (v > 0 ? v : defaultAccountGap)
+        return max(1, min(value, 1_000))
+    }
+
+    /// Set the account lookahead (persisted). Values are clamped to [1, 1000].
+    @MainActor
+    static func setAccountGap(_ gap: Int) {
+        let clamped = max(1, min(gap, 1_000))
+        UserDefaults.standard.set(clamped, forKey: userDefaultsAccountGapKey)
     }
 
     // MARK: - Scan mode (Auto/Manual)

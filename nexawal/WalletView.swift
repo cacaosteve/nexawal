@@ -89,6 +89,34 @@ struct WalletView: View {
                                         .font(.system(.body, design: .monospaced))
                                 }
                             }
+
+                            HStack {
+                                Text("Target Height")
+                                Spacer()
+                                Text("\(viewModel.chainHeight)")
+                                    .font(.system(.body, design: .monospaced))
+                            }
+
+                            HStack {
+                                Text("Accounts (lookahead)")
+                                Spacer()
+                                Text("\(MoneroConfig.accountGap)")
+                                    .font(.system(.body, design: .monospaced))
+                            }
+
+                            HStack {
+                                Text("Gap limit")
+                                Spacer()
+                                Text("\(MoneroConfig.gapLimit)")
+                                    .font(.system(.body, design: .monospaced))
+                            }
+
+                            HStack {
+                                Text("Throughput")
+                                Spacer()
+                                Text(String(format: "%.1f blk/s", viewModel.scanBlocksPerSecond))
+                                    .font(.system(.body, design: .monospaced))
+                            }
                         }
 
                         VStack(alignment: .leading, spacing: 6) {
@@ -98,21 +126,13 @@ struct WalletView: View {
                                 viewModel.isSynced
                                 ? "Wallet is fully synced"
                                 : (
-                                    viewModel.remainingBlocks <= 5
-                                    ? "Finalizing…"
-                                    : (
-                                        (viewModel.chainHeight == 0 || viewModel.lastScannedHeight == viewModel.restoreHeight)
-                                        ? "Initializing scan…"
-                                        : "Syncing… \(viewModel.remainingBlocks) blocks remaining"
-                                    )
+                                    (viewModel.chainHeight == 0 || viewModel.lastScannedHeight == viewModel.restoreHeight)
+                                    ? "Initializing scan…"
+                                    : "Syncing… \(viewModel.remainingBlocks) blocks remaining"
                                 )
                             )
                                 .font(.caption)
-                                .foregroundColor(
-                                    viewModel.isSynced
-                                    ? .secondary
-                                    : (viewModel.remainingBlocks <= 5 ? .secondary : .primary)
-                                )
+                                .foregroundColor(.secondary)
                         }
 
                         HStack {
@@ -257,6 +277,7 @@ struct SettingsView: View {
     @State private var i2pRPCAddress: String
     @State private var i2pProxyAddress: String
     @State private var gapLimitInput: String
+    @State private var accountGapInput: String
     @State private var scanModeIsAuto: Bool
     @State private var networkPolicyIndex: Int
     @State private var parInput: String
@@ -272,6 +293,7 @@ struct SettingsView: View {
         let heightValue = viewModel.restoreHeight
         self._rescanHeightInput = State(initialValue: heightValue == 0 ? "" : String(heightValue))
         self._gapLimitInput = State(initialValue: String(MoneroConfig.gapLimit))
+        self._accountGapInput = State(initialValue: String(MoneroConfig.accountGap))
         self._scanModeIsAuto = State(initialValue: MoneroConfig.scanMode == .auto)
         let policyIndex: Int
         switch MoneroConfig.networkPolicy {
@@ -341,6 +363,14 @@ struct SettingsView: View {
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                         Text("Controls how many subaddresses are scanned")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        TextField("Account lookahead (accounts, ≥1)", text: $accountGapInput)
+                            .keyboardType(.numberPad)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        Text("Number of accounts to scan starting at account 0 (advanced)")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
@@ -422,6 +452,10 @@ struct SettingsView: View {
                                     try? WalletCoreFFIClient.setGapLimit(walletId: id, gapLimit: gap)
                                 }
                             }
+                        }
+                        if let acc = Int(accountGapInput) {
+                            let clamped = max(1, min(acc, 1000))
+                            MoneroConfig.setAccountGap(clamped)
                         }
                         // Scan mode and tuning
                         MoneroConfig.setScanMode(scanModeIsAuto ? .auto : .manual)

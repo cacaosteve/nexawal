@@ -291,6 +291,19 @@ actor WalletManager {
         return currentWalletId
     }
 
+    /// Force rescan from a specific height. Resets core scan state, clears local cache, and refreshes.
+    func rescan(from height: UInt64) async throws -> WalletCoreFFIClient.SyncStatus {
+        guard let walletId = currentWalletId else {
+            throw WalletError.refreshFailed("No wallet is currently open")
+        }
+        // Reset core state to the requested height
+        try WalletCoreFFIClient.forceRescanFromHeight(walletId: walletId, fromHeight: height)
+        // Clear persisted cache so we don't restore old state on next launch
+        try clearScanCache()
+        // Trigger a refresh; this will also export a fresh cache on success
+        return try await refreshWallet()
+    }
+
     /// Detect if an error message indicates a parallel worker stall/collector channel issue
     private func isParallelWorkerStall(_ message: String) -> Bool {
         let msg = message.lowercased()
@@ -451,14 +464,97 @@ actor WalletManager {
             throw WalletError.statusFailed("No wallet is currently open")
         }
         applyBroadcastProxy()
+
+        // Verbose logging: amount, policy, endpoint, proxy, balances
+        let policy = MoneroConfig.networkPolicy
+        let endpoint = MoneroConfig.broadcastNodeURL()
+        let proxyDesc = MoneroConfig.i2pHTTPProxyAddress ?? "(none)"
+        let amountXMR = Double(amountPiconero) / 1_000_000_000_000.0
+        if let (total, unlocked) = try? getBalance() {
+            let totalXMR = Double(total) / 1_000_000_000_000.0
+            let unlockedXMR = Double(unlocked) / 1_000_000_000_000.0
+            print("🔎 Preview start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc), balances total=\(String(format: "%.12f", totalXMR)) XMR, unlocked=\(String(format: "%.12f", unlockedXMR)) XMR")
+        } else {
+            print("🔎 Preview start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
+        }
+
         let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
         let fee = try WalletCoreFFIClient.previewFee(
             walletId: walletId,
             destinations: [dest],
             ringLen: ringLen,
-            nodeURL: MoneroConfig.broadcastNodeURL()
+            nodeURL: endpoint
         )
+
+        let feeXMR = Double(fee) / 1_000_000_000_000.0
+        print("📦 Estimated fee: \(fee) piconero (\(String(format: "%.12f", feeXMR)) XMR)")
+
         return fee
+    }
+
+    /// Preview sweep ("Send Max") to a destination.
+    /// - Returns: (amount, fee) in piconero where `amount` is computed by the core (roughly unlocked - fee).
+    func previewSweep(toAddress: String, ringLen: UInt8 = 16) throws -> (amount: UInt64, fee: UInt64) {
+        guard let walletId = currentWalletId else {
+            throw WalletError.statusFailed("No wallet is currently open")
+        }
+        applyBroadcastProxy()
+
+        let policy = MoneroConfig.networkPolicy
+        let endpoint = MoneroConfig.broadcastNodeURL()
+        let proxyDesc = MoneroConfig.i2pHTTPProxyAddress ?? "(none)"
+        if let (total, unlocked) = try? getBalance() {
+            let totalXMR = Double(total) / 1_000_000_000_000.0
+            let unlockedXMR = Double(unlocked) / 1_000_000_000_000.0
+            print("🔎 Sweep preview start: ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc), balances total=\(String(format: "%.12f", totalXMR)) XMR, unlocked=\(String(format: "%.12f", unlockedXMR)) XMR")
+        } else {
+            print("🔎 Sweep preview start: ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
+        }
+
+        let res = try WalletCoreFFIClient.previewSweep(
+            walletId: walletId,
+            toAddress: toAddress,
+            ringLen: ringLen,
+            nodeURL: endpoint
+        )
+
+        let amountXMR = Double(res.amount) / 1_000_000_000_000.0
+        let feeXMR = Double(res.fee) / 1_000_000_000_000.0
+        print("📦 Sweep preview: amount=\(res.amount) piconero (\(String(format: "%.12f", amountXMR)) XMR), fee=\(res.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR)")
+
+        return res
+    }
+
+    /// Sweep ("Send Max") to a destination. Returns (txid, amount, fee).
+    func sweep(toAddress: String, ringLen: UInt8 = 16) throws -> (txid: String, amount: UInt64, fee: UInt64) {
+        guard let walletId = currentWalletId else {
+            throw WalletError.statusFailed("No wallet is currently open")
+        }
+        applyBroadcastProxy()
+
+        let policy = MoneroConfig.networkPolicy
+        let endpoint = MoneroConfig.broadcastNodeURL()
+        let proxyDesc = MoneroConfig.i2pHTTPProxyAddress ?? "(none)"
+        if let (total, unlocked) = try? getBalance() {
+            let totalXMR = Double(total) / 1_000_000_000_000.0
+            let unlockedXMR = Double(unlocked) / 1_000_000_000_000.0
+            print("📤 Sweep start: ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc), balances total=\(String(format: "%.12f", totalXMR)) XMR, unlocked=\(String(format: "%.12f", unlockedXMR)) XMR")
+        } else {
+            print("📤 Sweep start: ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
+        }
+
+        let res = try WalletCoreFFIClient.sweep(
+            walletId: walletId,
+            toAddress: toAddress,
+            ringLen: ringLen,
+            nodeURL: endpoint
+        )
+
+        let amountXMR = Double(res.amount) / 1_000_000_000_000.0
+        let feeXMR = Double(res.fee) / 1_000_000_000_000.0
+        print("✅ Swept txid=\(res.txid), amount=\(res.amount) piconero (\(String(format: "%.12f", amountXMR)) XMR), fee=\(res.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR) via \(policy) endpoint \(endpoint)")
+
+        return res
     }
 
     /// Send to a single destination honoring broadcast policy (clearnet, I2P, or hybrid).
@@ -467,13 +563,31 @@ actor WalletManager {
             throw WalletError.statusFailed("No wallet is currently open")
         }
         applyBroadcastProxy()
+
+        // Verbose logging: amount, policy, endpoint, proxy, balances
+        let policy = MoneroConfig.networkPolicy
+        let endpoint = MoneroConfig.broadcastNodeURL()
+        let proxyDesc = MoneroConfig.i2pHTTPProxyAddress ?? "(none)"
+        let amountXMR = Double(amountPiconero) / 1_000_000_000_000.0
+        if let (total, unlocked) = try? getBalance() {
+            let totalXMR = Double(total) / 1_000_000_000_000.0
+            let unlockedXMR = Double(unlocked) / 1_000_000_000_000.0
+            print("📤 Send start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc), balances total=\(String(format: "%.12f", totalXMR)) XMR, unlocked=\(String(format: "%.12f", unlockedXMR)) XMR")
+        } else {
+            print("📤 Send start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
+        }
+
         let result = try WalletCoreFFIClient.send(
             walletId: walletId,
             toAddress: toAddress,
             amountPiconero: amountPiconero,
             ringLen: ringLen,
-            nodeURL: MoneroConfig.broadcastNodeURL()
+            nodeURL: endpoint
         )
+
+        let feeXMR = Double(result.fee) / 1_000_000_000_000.0
+        print("✅ Sent txid=\(result.txid), fee=\(result.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR) via \(policy) endpoint \(endpoint)")
+
         return result
     }
 

@@ -12,7 +12,9 @@ struct SendView: View {
 
     // State
     @State private var isEstimating: Bool = false
+    @State private var isMaxMode: Bool = false
     @State private var isSending: Bool = false
+    @State private var previewReady: Bool = false
     @State private var errorMessage: String?
     @State private var infoMessage: String?
 
@@ -163,6 +165,16 @@ struct SendView: View {
                         .disabled(isEstimating || isSending || parsedAmountPiconero() == nil || !looksLikeAddress(toAddress))
 
                         Button {
+                            Task { await sendMax() }
+                        } label: {
+                            HStack {
+                                Image(systemName: "arrow.up.circle")
+                                Text("Send Max")
+                            }
+                        }
+                        .disabled(isEstimating || isSending)
+
+                        Button {
                             Task { await performSend() }
                         } label: {
                             HStack {
@@ -174,7 +186,7 @@ struct SendView: View {
                                 Text(isSending ? "Sending..." : "Send")
                             }
                         }
-                        .disabled(!canSend())
+                        .disabled(isEstimating || isSending || !canSend())
                     }
                 }
             }
@@ -191,6 +203,7 @@ struct SendView: View {
             infoMessage = nil
             sentTxid = nil
             sentFeePiconero = nil
+            isMaxMode = false
         }
     }
 
@@ -201,18 +214,25 @@ struct SendView: View {
               let ring = parsedRingLen(),
               looksLikeAddress(toAddress) else {
             errorMessage = "Enter a valid address and amount."
+            previewReady = false
             return
         }
         errorMessage = nil
         infoMessage = nil
         isEstimating = true
         estimatedFeePiconero = nil
+        previewReady = false
+
+        // If the user is previewing a specific amount, we are not in "Send Max" (sweep) mode.
+        isMaxMode = false
 
         do {
             let fee = try await walletManager.previewFee(toAddress: toAddress, amountPiconero: amountPico, ringLen: ring)
             estimatedFeePiconero = fee
+            previewReady = true
             infoMessage = "Fee estimated using broadcast policy."
         } catch {
+            previewReady = false
             errorMessage = "Fee preview failed: \(error.localizedDescription)"
         }
 
@@ -220,22 +240,13 @@ struct SendView: View {
     }
 
     private func performSend() async {
-        guard let amountPico = parsedAmountPiconero(),
-              let ring = parsedRingLen(),
+        guard let ring = parsedRingLen(),
               looksLikeAddress(toAddress) else {
             errorMessage = "Enter a valid address and amount."
             return
         }
-
-        // Balance sanity check (if we have an estimate, check amount + fee; otherwise, amount only)
-        if let fee = estimatedFeePiconero {
-            let total = safeAdd(amountPico, fee)
-            if total > viewModel.unlockedBalance {
-                errorMessage = "Insufficient unlocked balance for amount + fee."
-                return
-            }
-        } else if amountPico > viewModel.unlockedBalance {
-            errorMessage = "Insufficient unlocked balance."
+        guard previewReady, estimatedFeePiconero != nil else {
+            errorMessage = "Preview the fee before sending."
             return
         }
 
@@ -246,11 +257,46 @@ struct SendView: View {
         sentFeePiconero = nil
 
         do {
-            let result = try await walletManager.send(toAddress: toAddress, amountPiconero: amountPico, ringLen: ring)
-            sentTxid = result.txid
-            sentFeePiconero = result.fee
-            estimatedFeePiconero = result.fee
-            infoMessage = "Transaction broadcast via \(policyText())."
+            if isMaxMode {
+                // In max mode, always sweep at send time so fee changes are handled correctly.
+                let result = try await walletManager.sweep(toAddress: toAddress, ringLen: ring)
+                sentTxid = result.txid
+                sentFeePiconero = result.fee
+                estimatedFeePiconero = result.fee
+
+                // Keep UI honest: set the amount field to what was actually sent.
+                let xmr = viewModel.piconeroToXMR(result.amount)
+                amountXMR = String(format: "%.12f", xmr)
+
+                infoMessage = "Swept max spendable via \(policyText())."
+            } else {
+                guard let amountPico = parsedAmountPiconero() else {
+                    errorMessage = "Enter a valid address and amount."
+                    isSending = false
+                    return
+                }
+
+                // Balance sanity check for exact-amount sends
+                if let fee = estimatedFeePiconero {
+                    let total = safeAdd(amountPico, fee)
+                    if total > viewModel.unlockedBalance {
+                        errorMessage = "Insufficient unlocked balance for amount + fee."
+                        isSending = false
+                        return
+                    }
+                } else if amountPico > viewModel.unlockedBalance {
+                    errorMessage = "Insufficient unlocked balance."
+                    isSending = false
+                    return
+                }
+
+                let result = try await walletManager.send(toAddress: toAddress, amountPiconero: amountPico, ringLen: ring)
+                sentTxid = result.txid
+                sentFeePiconero = result.fee
+                estimatedFeePiconero = result.fee
+                infoMessage = "Transaction broadcast via \(policyText())."
+            }
+
             // Refresh balance after send
             await viewModel.updateBalance()
         } catch {
@@ -294,6 +340,7 @@ struct SendView: View {
         guard !isSending, !isEstimating else { return false }
         guard parsedAmountPiconero() != nil, parsedRingLen() != nil else { return false }
         guard looksLikeAddress(toAddress) else { return false }
+        guard previewReady, estimatedFeePiconero != nil else { return false }
         return true
     }
 
@@ -324,6 +371,46 @@ struct SendView: View {
     private func safeMul(_ a: UInt64, _ b: UInt64) -> UInt64 {
         let (prod, overflow) = a.multipliedReportingOverflow(by: b)
         return overflow ? UInt64.max : prod
+    }
+
+    // Real "Send Max" ("sweep"): ask the core to compute the maximum sendable amount (unlocked - fee).
+    private func sendMax() async {
+        errorMessage = nil
+        infoMessage = nil
+        estimatedFeePiconero = nil
+        previewReady = false
+
+        guard looksLikeAddress(toAddress) else {
+            errorMessage = "Enter a valid address."
+            return
+        }
+
+        let ring = parsedRingLen() ?? 16
+
+        do {
+            // Ask the core to compute the maximum sendable amount (unlocked - fee).
+            let res = try await walletManager.previewSweep(toAddress: toAddress, ringLen: ring)
+            let amount = res.amount
+            let fee = res.fee
+
+            guard amount > 0 else {
+                errorMessage = "No unlocked balance available to sweep after fee."
+                isMaxMode = false
+                return
+            }
+
+            estimatedFeePiconero = fee
+            previewReady = true
+            isMaxMode = true
+
+            let xmr = viewModel.piconeroToXMR(amount)
+            amountXMR = String(format: "%.12f", xmr)
+            infoMessage = "Amount set to max spendable (sweep). Final amount may change slightly at send time due to fee changes."
+        } catch {
+            previewReady = false
+            isMaxMode = false
+            errorMessage = "Fee preview failed: \(error.localizedDescription)"
+        }
     }
 }
 

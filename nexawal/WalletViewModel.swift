@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import MoneroWalletCoreFFI
 import Combine
+import CryptoKit
 
 @MainActor
 class WalletViewModel: ObservableObject {
@@ -22,11 +23,15 @@ class WalletViewModel: ObservableObject {
     @Published var lastScannedHeight: UInt64 = 0
     @Published var chainHeight: UInt64 = 0
     @Published var chainTime: UInt64 = 0
+    @Published var scanBlocksPerSecond: Double = 0.0
 
     // MARK: - Dependencies
 
     private let walletManager = WalletManager.shared
     private let storage = WalletStorage.shared
+
+    // NexaWal currently supports a single active wallet.
+    // We keep the walletId constant and *only* clear persisted data/cache via an explicit replace flow.
     private let walletId = "main_wallet"
 
     private var storedMetadata: StoredWalletMetadata?
@@ -38,11 +43,25 @@ class WalletViewModel: ObservableObject {
     private var pendingSyncPollRestart: Bool = false
     private let pollingStagnationInterval: TimeInterval = 5.0
 
+    // Single-wallet behavior: track the seed we last opened to avoid accidental destructive operations.
+    // NOTE: This is a privacy-preserving fingerprint (SHA256 of normalized mnemonic), not the mnemonic itself.
+    private var lastOpenedMnemonicFingerprint: String?
+
+    // While syncing, periodically refresh balance so the UI reflects incoming funds without requiring a manual refresh.
+    private var lastBalancePollAt: Date?
+    private let balancePollInterval: TimeInterval = 10.0
+
     // MARK: - Computed flags
 
     var syncProgress: Double {
+        let tol: UInt64 = 3
+        // Consider near-tip within tolerance as fully synced
+        if chainHeight > 0 && lastScannedHeight + tol >= chainHeight {
+            return 1.0
+        }
+
         guard chainHeight > restoreHeight else {
-            return chainHeight > 0 && lastScannedHeight >= chainHeight ? 1.0 : 0.0
+            return 0.0
         }
 
         let clampedScanned = min(lastScannedHeight, chainHeight)
@@ -54,11 +73,15 @@ class WalletViewModel: ObservableObject {
     }
 
     var remainingBlocks: UInt64 {
-        chainHeight > lastScannedHeight ? (chainHeight - lastScannedHeight) : 0
+        let tol: UInt64 = 3
+        let diff = chainHeight > lastScannedHeight ? (chainHeight - lastScannedHeight) : 0
+        // Hide tiny residual near tip
+        return diff > tol ? diff : 0
     }
 
     var isSynced: Bool {
-        chainHeight > 0 && lastScannedHeight >= chainHeight
+        let tol: UInt64 = 3
+        return chainHeight > 0 && lastScannedHeight + tol >= chainHeight
     }
 
     // MARK: - Init
@@ -75,6 +98,59 @@ class WalletViewModel: ObservableObject {
         Double(piconero) / 1_000_000_000_000.0
     }
 
+    /// Returns true if a wallet is persisted on device (metadata exists).
+    /// This is the authoritative signal for "Replace existing wallet?" confirmations.
+    func hasStoredWallet() async -> Bool {
+        do {
+            return (try await storage.loadMetadata()) != nil
+        } catch {
+            return false
+        }
+    }
+
+    /// Replace the existing single wallet with a new mnemonic (destructive).
+    /// Call this only after explicit user confirmation.
+    func replaceWallet(
+        mnemonic rawMnemonic: String,
+        restoreHeight: UInt64 = 0,
+        mainnet: Bool = true,
+        requireBiometrics: Bool = false
+    ) async {
+        // Clear persisted metadata + mnemonic first
+        do {
+            try await storage.clearWallet()
+        } catch {
+            // Continue: we can still attempt to open, but stale state may require a full rescan.
+            print("⚠️ Failed to clear stored wallet data during replace: \(error.localizedDescription)")
+        }
+
+        // Best-effort: clear any persisted scan cache for the (constant) walletId.
+        do {
+            // Need an open walletId for clearScanCache(); open is cheap and will be overwritten below anyway.
+            let normalized = rawMnemonic
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\n", with: " ")
+            if !normalized.isEmpty {
+                try await walletManager.openWallet(
+                    mnemonic: normalized,
+                    walletId: walletId,
+                    restoreHeight: restoreHeight,
+                    mainnet: mainnet
+                )
+                try await walletManager.clearScanCache()
+            }
+        } catch {
+            print("⚠️ Failed to clear scan cache during replace: \(error.localizedDescription)")
+        }
+
+        await createWallet(
+            mnemonic: rawMnemonic,
+            restoreHeight: restoreHeight,
+            mainnet: mainnet,
+            requireBiometrics: requireBiometrics
+        )
+    }
+
     func formatXMR(_ amount: Double) -> String {
         switch amount {
         case let value where value >= 1.0:
@@ -86,6 +162,9 @@ class WalletViewModel: ObservableObject {
         }
     }
 
+    /// Create/import a wallet in the single-wallet slot.
+    /// This is non-destructive: it does NOT clear any existing persisted wallet data.
+    /// Use `replaceWallet(...)` when the user has explicitly confirmed replacement.
     func createWallet(
         mnemonic rawMnemonic: String,
         restoreHeight: UInt64 = 0,
@@ -128,6 +207,9 @@ class WalletViewModel: ObservableObject {
             totalBalance = 0
             unlockedBalance = 0
             isWalletOpen = true
+
+            // Record the active wallet fingerprint for replacement detection/telemetry (non-destructive).
+            lastOpenedMnemonicFingerprint = Self.mnemonicFingerprint(normalizedMnemonic)
 
             let metadata = StoredWalletMetadata(
                 walletId: walletId,
@@ -176,6 +258,7 @@ class WalletViewModel: ObservableObject {
             let status = try await walletManager.refreshWallet()
             applySyncStatus(status)
 
+            // Always do a final balance fetch at the end of refresh so totals are correct.
             let balance = try await walletManager.getBalance()
             totalBalance = balance.total
             unlockedBalance = balance.unlocked
@@ -238,16 +321,7 @@ class WalletViewModel: ObservableObject {
         }
 
         do {
-            try await walletManager.openWallet(
-                mnemonic: trimmedMnemonic,
-                walletId: walletId,
-                restoreHeight: height,
-                mainnet: isMainnet
-            )
-
-            isWalletOpen = true
-
-            let status = try await walletManager.refreshWallet()
+            let status = try await walletManager.rescan(from: height)
             applySyncStatus(status)
 
             let balance = try await walletManager.getBalance()
@@ -277,17 +351,31 @@ class WalletViewModel: ObservableObject {
         pendingSyncPollRestart = false
         lastPollingStatus = (chainHeight: chainHeight, lastScanned: lastScannedHeight)
         lastPollingUpdate = Date()
+        lastBalancePollAt = nil
         syncStatusPollTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
                 do {
                     let status = try await self.walletManager.getSyncStatus()
+
+                    // Update sync status (and compute scan rate) on the main actor.
                     let shouldRestart = await MainActor.run { () -> Bool in
                         self.applySyncStatus(status)
                         let now = Date()
                         let tuple = (chainHeight: status.chainHeight, lastScanned: status.lastScanned)
                         if self.lastPollingStatus?.chainHeight != tuple.chainHeight ||
                             self.lastPollingStatus?.lastScanned != tuple.lastScanned {
+                            let prev = self.lastPollingStatus
+                            let prevUpdate = self.lastPollingUpdate
+                            if let prev = prev, let lastUpdate = prevUpdate {
+                                let dt = now.timeIntervalSince(lastUpdate)
+                                if dt > 0 {
+                                    let db = Double(status.lastScanned) - Double(prev.lastScanned)
+                                    self.scanBlocksPerSecond = max(0.0, db / dt)
+                                }
+                            } else {
+                                self.scanBlocksPerSecond = 0.0
+                            }
                             self.lastPollingStatus = tuple
                             self.lastPollingUpdate = now
                             return false
@@ -305,6 +393,34 @@ class WalletViewModel: ObservableObject {
                     if shouldRestart {
                         break
                     }
+
+                    // While syncing, refresh balances every 10 seconds so the UI updates during long scans.
+                    // This is rate-limited and skipped when already synced.
+                    let shouldPollBalance: Bool = await MainActor.run {
+                        guard !self.isSynced else { return false }
+                        let now = Date()
+                        if let last = self.lastBalancePollAt {
+                            return now.timeIntervalSince(last) >= self.balancePollInterval
+                        }
+                        return true
+                    }
+
+                    if shouldPollBalance {
+                        do {
+                            let balance = try await self.walletManager.getBalance()
+                            await MainActor.run {
+                                self.totalBalance = balance.total
+                                self.unlockedBalance = balance.unlocked
+                                self.lastBalancePollAt = Date()
+                            }
+                            await self.persistMetadataUpdate { metadata in
+                                metadata.totalBalance = balance.total
+                                metadata.unlockedBalance = balance.unlocked
+                            }
+                        } catch {
+                            // Ignore intermittent balance fetch errors during sync; final refresh will update balances.
+                        }
+                    }
                 } catch {
                     break
                 }
@@ -319,6 +435,7 @@ class WalletViewModel: ObservableObject {
                     self.syncStatusPollTask = nil
                     self.lastPollingStatus = nil
                     self.lastPollingUpdate = nil
+                    self.lastBalancePollAt = nil
                 }
             }
         }
@@ -413,6 +530,7 @@ class WalletViewModel: ObservableObject {
 
             let mnemonic = try await storage.loadMnemonic(prompt: "Authenticate to unlock NexaWal")
             self.mnemonic = mnemonic
+            lastOpenedMnemonicFingerprint = Self.mnemonicFingerprint(mnemonic)
 
             let address = try await walletManager.derivePrimaryAddress(
                 mnemonic: mnemonic,
@@ -420,6 +538,8 @@ class WalletViewModel: ObservableObject {
             )
             walletAddress = address
 
+            // Open with the persisted restore height for this wallet.
+            // If the user later replaces the seed, createWallet() will clear metadata+cache first.
             try await walletManager.openWallet(
                 mnemonic: mnemonic,
                 walletId: walletId,
@@ -447,5 +567,13 @@ class WalletViewModel: ObservableObject {
         }
 
         isLoading = false
+    }
+
+    private static func mnemonicFingerprint(_ mnemonic: String) -> String {
+        let normalized = mnemonic
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 }
