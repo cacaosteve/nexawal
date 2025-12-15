@@ -13,6 +13,9 @@ class WalletViewModel: ObservableObject {
     @Published var totalBalance: UInt64 = 0
     @Published var unlockedBalance: UInt64 = 0
 
+    // Transaction history (transfer-level)
+    @Published var transfers: [WalletCoreFFIClient.Transfer] = []
+
     @Published var isLoading: Bool = false
     @Published var isRefreshing: Bool = false
     @Published var isWalletOpen: Bool = false
@@ -29,6 +32,11 @@ class WalletViewModel: ObservableObject {
 
     private let walletManager = WalletManager.shared
     private let storage = WalletStorage.shared
+
+    // While syncing, periodically refresh transfer history so pending/outgoing and new incoming
+    // appear without requiring a manual refresh.
+    private var lastTransfersPollAt: Date?
+    private let transfersPollInterval: TimeInterval = 10.0
 
     // NexaWal currently supports a single active wallet.
     // We keep the walletId constant and *only* clear persisted data/cache via an explicit replace flow.
@@ -263,6 +271,12 @@ class WalletViewModel: ObservableObject {
             totalBalance = balance.total
             unlockedBalance = balance.unlocked
 
+            // Refresh transfer history at end of refresh (authoritative)
+            // WalletManager is an actor; avoid calling actor-isolated methods from this main-actor context.
+            if let rows = try? WalletCoreFFIClient.listTransfers(walletId: walletId) {
+                transfers = rows
+            }
+
             await persistMetadataUpdate()
         } catch {
             errorMessage = "Refresh failed: \(error.localizedDescription)"
@@ -352,6 +366,7 @@ class WalletViewModel: ObservableObject {
         lastPollingStatus = (chainHeight: chainHeight, lastScanned: lastScannedHeight)
         lastPollingUpdate = Date()
         lastBalancePollAt = nil
+        lastTransfersPollAt = nil
         syncStatusPollTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
@@ -421,6 +436,34 @@ class WalletViewModel: ObservableObject {
                             // Ignore intermittent balance fetch errors during sync; final refresh will update balances.
                         }
                     }
+
+                    // While syncing, refresh transfer history every 10 seconds (rate-limited) so the UI shows
+                    // newly discovered incoming transfers and pending outgoing items without manual refresh.
+                    let shouldPollTransfers: Bool = await MainActor.run {
+                        guard !self.isSynced else { return false }
+                        let now = Date()
+                        if let last = self.lastTransfersPollAt {
+                            return now.timeIntervalSince(last) >= self.transfersPollInterval
+                        }
+                        return true
+                    }
+
+                    if shouldPollTransfers {
+                        do {
+                            let rows = try await MainActor.run { () -> [WalletCoreFFIClient.Transfer]? in
+                                // WalletManager is an actor; avoid calling actor-isolated methods from this main-actor block.
+                                return try? WalletCoreFFIClient.listTransfers(walletId: self.walletId)
+                            }
+                            if let rows {
+                                await MainActor.run {
+                                    self.transfers = rows
+                                    self.lastTransfersPollAt = Date()
+                                }
+                            }
+                        } catch {
+                            // Ignore intermittent transfer fetch errors during sync; final refresh will update transfers.
+                        }
+                    }
                 } catch {
                     break
                 }
@@ -436,6 +479,7 @@ class WalletViewModel: ObservableObject {
                     self.lastPollingStatus = nil
                     self.lastPollingUpdate = nil
                     self.lastBalancePollAt = nil
+                    self.lastTransfersPollAt = nil
                 }
             }
         }
