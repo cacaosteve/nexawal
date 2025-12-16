@@ -97,10 +97,15 @@ actor WalletManager {
 
         do {
             let status = try await performRefresh(walletId: walletId, nodeURL: nodeURL)
+            // Final export at end of refresh (authoritative)
             exportCacheAndPersist(for: walletId)
             cachedBalance = nil
             return status
         } catch let nodeError {
+            // Best-effort: persist any progress even on failure/cancellation.
+            // This helps resumes after backgrounding, network loss, or app termination.
+            exportCacheAndPersist(for: walletId)
+
             do {
                 if (nodeError as? CancellationError) != nil {
                     print("ℹ️ Refresh cancelled by system; returning latest status")
@@ -191,6 +196,11 @@ actor WalletManager {
         var targetHeight: UInt64?
         var lastProgressAt = Date()
         var lastScannedSnapshot: UInt64 = 0
+
+        // Periodic persistence while refresh is running
+        var lastPersistAt = Date.distantPast
+        let persistInterval: TimeInterval = 15.0
+
         // Scale stall timeout based on scan tuning
         let par = refreshPar
         let batch = refreshBatch
@@ -208,6 +218,22 @@ actor WalletManager {
             if targetHeight == nil, status.chainHeight > status.restoreHeight {
                 targetHeight = status.chainHeight
                 print("🧭 Refresh target height set to \(targetHeight!) (restoreHeight=\(status.restoreHeight))")
+            }
+
+            // Track progress and detect stalls
+            if status.lastScanned > lastScannedSnapshot {
+                lastScannedSnapshot = status.lastScanned
+                lastProgressAt = Date()
+                // Periodic progress log
+                print("⏳ Refresh progress: scanned=\(status.lastScanned), target=\(targetHeight ?? status.chainHeight), tip=\(status.chainHeight)")
+            }
+
+            // Persist scan progress periodically while refresh is still running.
+            // This improves resume after backgrounding, app termination, or transient network issues.
+            let now = Date()
+            if now.timeIntervalSince(lastPersistAt) >= persistInterval, status.lastScanned > 0 {
+                exportCacheAndPersist(for: walletId)
+                lastPersistAt = now
             }
 
             // Only compute effective target after targetHeight is known (daemon reported > restore)
@@ -228,18 +254,11 @@ actor WalletManager {
                 }
             }
 
-            // Track progress and detect stalls
-            if status.lastScanned > lastScannedSnapshot {
-                lastScannedSnapshot = status.lastScanned
-                lastProgressAt = Date()
-                // Periodic progress log
-                print("⏳ Refresh progress: scanned=\(status.lastScanned), target=\(targetHeight ?? status.chainHeight), tip=\(status.chainHeight)")
-            }
-
-            // Timeout with detailed context
             // Early abort if core reported an error and no progress for a short window
             if Date().timeIntervalSince(lastProgressAt) > 2.0 {
                 if let coreErr = WalletCoreFFIClient.lastErrorMessage(), !coreErr.isEmpty {
+                    // Best-effort persistence before surfacing failure
+                    exportCacheAndPersist(for: walletId)
                     throw WalletError.refreshFailed("Core error: \(coreErr)")
                 }
             }
@@ -256,6 +275,7 @@ actor WalletManager {
                                         try WalletCoreFFIClient.refreshWalletAsync(walletId: walletId, nodeURL: MoneroConfig.scanNodeURL())
                                         // Reset stall clock and give the sequential path time
                                         lastProgressAt = Date()
+                                        lastPersistAt = Date.distantPast
                                         dynamicStallTimeout = max(60.0, dynamicStallTimeout)
                                         continue
                                     }
@@ -289,6 +309,21 @@ actor WalletManager {
     /// Get the current wallet ID
     func getCurrentWalletId() -> String? {
         return currentWalletId
+    }
+
+    /// Best-effort snapshot of the current wallet scan state for fast resume.
+    /// Intended to be called when the app backgrounds.
+    ///
+    /// Notes:
+    /// - Uses the existing cache export/import mechanism.
+    /// - Does not force a refresh; it only persists current core state.
+    func snapshotState() throws {
+        guard let walletId = currentWalletId else {
+            throw WalletError.statusFailed("No wallet is currently open")
+        }
+
+        // Export whatever state the core currently has and persist it.
+        exportCacheAndPersist(for: walletId)
     }
 
     /// Force rescan from a specific height. Resets core scan state, clears local cache, and refreshes.

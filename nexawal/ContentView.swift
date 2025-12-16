@@ -8,8 +8,8 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = WalletViewModel()
-    
+    @ObservedObject var viewModel: WalletViewModel
+
     var body: some View {
         Group {
             if viewModel.isWalletOpen {
@@ -19,13 +19,11 @@ struct ContentView: View {
             }
         }
         .task {
-            // Check if wallet is already open on app launch
-            // For now, we'll require creating/importing a wallet each session
-            // In the future, we can persist wallet state
+            // WalletViewModel handles loading any stored wallet on launch.
         }
     }
 }
 
 #Preview {
-    ContentView()
+    ContentView(viewModel: WalletViewModel())
 }

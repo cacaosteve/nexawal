@@ -116,6 +116,20 @@ class WalletViewModel: ObservableObject {
         }
     }
 
+    /// Best-effort snapshot for fast resume after backgrounding.
+    /// Persists the core scan cache to disk so the next launch can import and continue closer to where it left off.
+    func snapshotForBackground() {
+        guard isWalletOpen else { return }
+        Task {
+            do {
+                try await walletManager.snapshotState()
+            } catch {
+                // Best effort only
+                print("⚠️ Background snapshot failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// Replace the existing single wallet with a new mnemonic (destructive).
     /// Call this only after explicit user confirmation.
     func replaceWallet(
