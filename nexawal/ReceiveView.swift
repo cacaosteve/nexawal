@@ -9,12 +9,17 @@ struct ReceiveView: View {
     @State private var showCopyConfirmation: Bool = false
     @State private var showShareSheet: Bool = false
 
+    // Subaddress UI
+    @State private var showCreateSubaddressPrompt: Bool = false
+    @State private var newSubaddressLabel: String = ""
+
     private let addressFont = Font.system(.caption, design: .monospaced)
 
     var body: some View {
         NavigationView {
             ScrollView {
                 VStack(spacing: 24) {
+                    subaddressSection
                     qrSection
                     addressSection
                     amountSection
@@ -37,6 +42,54 @@ struct ReceiveView: View {
                         Image(systemName: "doc.on.doc")
                     }
                     .accessibilityLabel("Copy Address")
+                }
+            }
+        }
+        .onAppear {
+            Task { await viewModel.loadReceiveSubaddresses() }
+        }
+        .alert("New address label (optional)", isPresented: $showCreateSubaddressPrompt) {
+            TextField("Label", text: $newSubaddressLabel)
+            Button("Cancel", role: .cancel) {
+                newSubaddressLabel = ""
+            }
+            Button("Create") {
+                let label = newSubaddressLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+                newSubaddressLabel = ""
+                Task { await viewModel.createNewReceiveSubaddress(label: label) }
+            }
+        } message: {
+            Text("A new receive address (subaddress) will be generated for privacy.")
+        }
+    }
+
+    private var subaddressSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Receive Address")
+                .font(.headline)
+
+            if viewModel.receiveSubaddresses.isEmpty {
+                Text("Loading addresses…")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Address", selection: $viewModel.selectedReceiveSubaddressIndex) {
+                        ForEach(viewModel.receiveSubaddresses, id: \.subaddressIndex) { e in
+                            let label = e.label.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let title = label.isEmpty ? "Subaddress \(e.subaddressIndex)" : label
+                            Text(title).tag(e.subaddressIndex)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    Button {
+                        showCreateSubaddressPrompt = true
+                    } label: {
+                        Label("New Address", systemImage: "plus.circle")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
         }
@@ -67,7 +120,7 @@ struct ReceiveView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Wallet Address")
                 .font(.headline)
-            Text(viewModel.walletAddress)
+            Text(viewModel.currentReceiveAddress())
                 .font(addressFont)
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -149,7 +202,7 @@ struct ReceiveView: View {
     }
 
     private var moneroURI: String {
-        var base = "monero:\(viewModel.walletAddress)"
+        var base = "monero:\(viewModel.currentReceiveAddress())"
         var components: [String] = []
 
         if let amountString = sanitizedAmountString {
@@ -188,7 +241,7 @@ struct ReceiveView: View {
     }
 
     private func copyAddress() {
-        UIPasteboard.general.string = viewModel.walletAddress
+        UIPasteboard.general.string = viewModel.currentReceiveAddress()
         withAnimation {
             showCopyConfirmation = true
         }
@@ -198,8 +251,6 @@ struct ReceiveView: View {
             }
         }
     }
-
-
 }
 
 // MARK: - QR Code Rendering

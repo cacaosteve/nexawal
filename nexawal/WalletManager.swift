@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import Darwin
 import MoneroWalletCoreFFI
 
 enum WalletError: LocalizedError {
@@ -21,16 +20,16 @@ enum WalletError: LocalizedError {
         switch self {
         case .invalidMnemonic:
             return "Invalid mnemonic phrase. Must be 25 words."
-        case .walletOpenFailed(let msg):
-            return "Failed to open wallet: \(msg)"
-        case .refreshFailed(let msg):
-            return "Failed to refresh wallet: \(msg)"
-        case .balanceFailed(let msg):
-            return "Failed to get balance: \(msg)"
-        case .statusFailed(let msg):
-            return "Failed to determine sync status: \(msg)"
-        case .addressDerivationFailed(let msg):
-            return "Failed to derive address: \(msg)"
+        case .walletOpenFailed(let message):
+            return "Failed to open wallet: \(message)"
+        case .refreshFailed(let message):
+            return message
+        case .balanceFailed(let message):
+            return "Failed to get balance: \(message)"
+        case .statusFailed(let message):
+            return "Failed to get sync status: \(message)"
+        case .addressDerivationFailed(let message):
+            return "Failed to derive address: \(message)"
         }
     }
 }
@@ -46,6 +45,29 @@ actor WalletManager {
     private var currentNetworkMainnet: Bool = true
 
     private init() {}
+
+    // MARK: - Subaddress-constrained helpers (account 0)
+
+    private func filterForSubaddressMinor(_ minor: UInt32) -> [String: Any] {
+        // Core currently supports {"subaddress_minor": <u32>} and assumes major == 0.
+        ["subaddress_minor": minor]
+    }
+
+    /// Get total/unlocked balance constrained to account 0, subaddress minor.
+    /// Note: this does NOT use the wallet-wide cached balance.
+    func getBalance(fromSubaddressMinor minor: UInt32) throws -> (total: UInt64, unlocked: UInt64) {
+        guard let walletId = currentWalletId else {
+            throw WalletError.balanceFailed("No wallet is currently open")
+        }
+        do {
+            return try WalletCoreFFIClient.getBalanceWithFilter(
+                walletId: walletId,
+                filter: filterForSubaddressMinor(minor)
+            )
+        } catch {
+            throw WalletError.balanceFailed(error.localizedDescription)
+        }
+    }
 
     /// Open or create a wallet from a mnemonic phrase
     func openWallet(mnemonic: String, walletId: String = "main_wallet", restoreHeight: UInt64 = 0, mainnet: Bool = true) throws {
@@ -74,6 +96,8 @@ actor WalletManager {
             throw WalletError.walletOpenFailed(error.localizedDescription)
         }
     }
+
+
 
     /// Refresh the wallet against the Monero node
     func refreshWallet() async throws -> WalletCoreFFIClient.SyncStatus {
@@ -525,6 +549,105 @@ actor WalletManager {
         print("📦 Estimated fee: \(fee) piconero (\(String(format: "%.12f", feeXMR)) XMR)")
 
         return fee
+    }
+
+    /// Estimate fee for a single-destination transfer constrained to a subaddress (account 0, minor).
+    func previewFee(
+        fromSubaddressMinor: UInt32,
+        toAddress: String,
+        amountPiconero: UInt64,
+        ringLen: UInt8 = 16
+    ) throws -> UInt64 {
+        guard let walletId = currentWalletId else {
+            throw WalletError.statusFailed("No wallet is currently open")
+        }
+        applyBroadcastProxy()
+
+        let policy = MoneroConfig.networkPolicy
+        let endpoint = MoneroConfig.broadcastNodeURL()
+        let proxyDesc = MoneroConfig.i2pHTTPProxyAddress ?? "(none)"
+        let amountXMR = Double(amountPiconero) / 1_000_000_000_000.0
+        print("🔎 Preview (subaddr \(fromSubaddressMinor)) start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
+
+        let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
+        let fee = try WalletCoreFFIClient.previewFeeWithFilter(
+            walletId: walletId,
+            destinations: [dest],
+            filter: filterForSubaddressMinor(fromSubaddressMinor),
+            ringLen: ringLen,
+            nodeURL: endpoint
+        )
+
+        let feeXMR = Double(fee) / 1_000_000_000_000.0
+        print("📦 Estimated fee (subaddr \(fromSubaddressMinor)): \(fee) piconero (\(String(format: "%.12f", feeXMR)) XMR)")
+
+        return fee
+    }
+
+    /// Sweep preview ("Send Max") constrained to a subaddress (account 0, minor).
+    func previewSweep(
+        fromSubaddressMinor: UInt32,
+        toAddress: String,
+        ringLen: UInt8 = 16
+    ) throws -> (amount: UInt64, fee: UInt64) {
+        guard let walletId = currentWalletId else {
+            throw WalletError.statusFailed("No wallet is currently open")
+        }
+        applyBroadcastProxy()
+
+        let endpoint = MoneroConfig.broadcastNodeURL()
+        let res = try WalletCoreFFIClient.previewSweepWithFilter(
+            walletId: walletId,
+            toAddress: toAddress,
+            filter: filterForSubaddressMinor(fromSubaddressMinor),
+            ringLen: ringLen,
+            nodeURL: endpoint
+        )
+        return res
+    }
+
+    /// Sweep ("Send Max") constrained to a subaddress (account 0, minor).
+    func sweep(
+        fromSubaddressMinor: UInt32,
+        toAddress: String,
+        ringLen: UInt8 = 16
+    ) throws -> (txid: String, amount: UInt64, fee: UInt64) {
+        guard let walletId = currentWalletId else {
+            throw WalletError.statusFailed("No wallet is currently open")
+        }
+        applyBroadcastProxy()
+
+        let endpoint = MoneroConfig.broadcastNodeURL()
+        return try WalletCoreFFIClient.sweepWithFilter(
+            walletId: walletId,
+            toAddress: toAddress,
+            filter: filterForSubaddressMinor(fromSubaddressMinor),
+            ringLen: ringLen,
+            nodeURL: endpoint
+        )
+    }
+
+    /// Send exact amount constrained to a subaddress (account 0, minor). Fee is added on top (normal behavior).
+    func send(
+        fromSubaddressMinor: UInt32,
+        toAddress: String,
+        amountPiconero: UInt64,
+        ringLen: UInt8 = 16
+    ) throws -> (txid: String, fee: UInt64) {
+        guard let walletId = currentWalletId else {
+            throw WalletError.statusFailed("No wallet is currently open")
+        }
+        applyBroadcastProxy()
+
+        let endpoint = MoneroConfig.broadcastNodeURL()
+        let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
+        return try WalletCoreFFIClient.sendWithFilter(
+            walletId: walletId,
+            destinations: [dest],
+            filter: filterForSubaddressMinor(fromSubaddressMinor),
+            ringLen: ringLen,
+            nodeURL: endpoint
+        )
     }
 
     /// Preview sweep ("Send Max") to a destination.

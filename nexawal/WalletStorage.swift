@@ -2,6 +2,19 @@ import Foundation
 import LocalAuthentication
 import Security
 
+// MARK: - Receive Subaddresses (Account 0)
+//
+// NexaWal supports a single wallet, but we still want multiple receive subaddresses (minor indices)
+// for privacy and usability. We persist a small "subaddress book" in UserDefaults and derive
+// the actual address string deterministically from the mnemonic using WalletCoreFFI.
+//
+// Notes:
+// - We only manage account 0 here.
+// - We store labels + indices, not private keys.
+// - Addresses are derived on demand from the mnemonic already stored in Keychain.
+//
+// JSON storage key: "wallet.subaddresses.v1"
+
 enum WalletStorageError: LocalizedError {
     case encodingFailed
     case decodingFailed
@@ -117,6 +130,58 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Receive subaddress book (Account 0)
+
+struct StoredSubaddressEntry: Codable, Equatable, Sendable, Identifiable {
+    /// Always account 0 for now.
+    let accountIndex: UInt32
+    /// Subaddress minor index.
+    let subaddressIndex: UInt32
+    /// User-defined label (optional).
+    var label: String
+    /// When it was created locally (for UX ordering).
+    var createdAt: Date
+
+    var id: String { "a\(accountIndex)-s\(subaddressIndex)" }
+
+    init(accountIndex: UInt32 = 0, subaddressIndex: UInt32, label: String = "", createdAt: Date = Date()) {
+        self.accountIndex = accountIndex
+        self.subaddressIndex = subaddressIndex
+        self.label = label
+        self.createdAt = createdAt
+    }
+}
+
+struct StoredSubaddressBook: Codable, Equatable, Sendable {
+    /// Always 0 for MVP (account 0).
+    var accountIndex: UInt32 = 0
+    /// Next minor index to allocate for "New address".
+    var nextSubaddressIndex: UInt32 = 1
+    /// Stored entries for account 0.
+    var entries: [StoredSubaddressEntry] = []
+
+    mutating func ensurePrimaryExists() {
+        if !entries.contains(where: { $0.accountIndex == 0 && $0.subaddressIndex == 0 }) {
+            entries.insert(StoredSubaddressEntry(accountIndex: 0, subaddressIndex: 0, label: "Primary"), at: 0)
+        }
+        // Ensure next index is always > max existing (excluding primary).
+        let maxExisting = entries
+            .filter { $0.accountIndex == 0 }
+            .map { $0.subaddressIndex }
+            .max() ?? 0
+        nextSubaddressIndex = max(nextSubaddressIndex, maxExisting.saturating_add(1))
+    }
+
+    mutating func allocateNew(label: String = "") -> StoredSubaddressEntry {
+        ensurePrimaryExists()
+        let idx = nextSubaddressIndex
+        nextSubaddressIndex = nextSubaddressIndex.saturating_add(1)
+        let e = StoredSubaddressEntry(accountIndex: 0, subaddressIndex: idx, label: label)
+        entries.append(e)
+        return e
+    }
+}
+
 actor WalletStorage {
     static let shared = WalletStorage()
 
@@ -125,6 +190,9 @@ actor WalletStorage {
     private let metadataKey = "wallet.metadata"
     private let simulatorMnemonicKey = "wallet.mnemonic.simulator"
     private let defaults = UserDefaults.standard
+
+    // Receive subaddresses (account 0) persisted in UserDefaults
+    private let subaddressesKey = "wallet.subaddresses.v1"
 
     private init() {}
 
@@ -262,6 +330,7 @@ actor WalletStorage {
     /// Remove all stored wallet data.
     func clearWallet() throws {
         defaults.removeObject(forKey: metadataKey)
+        defaults.removeObject(forKey: subaddressesKey)
         try deleteMnemonic()
     }
 
@@ -303,6 +372,54 @@ actor WalletStorage {
         }
 
         return (false, false)
+    }
+
+    // MARK: - Receive subaddresses (Account 0)
+
+    /// Load the persisted subaddress book (account 0). If none exists, returns a default book with primary.
+    func loadSubaddressBook() throws -> StoredSubaddressBook {
+        if let data = defaults.data(forKey: subaddressesKey) {
+            do {
+                var book = try JSONDecoder().decode(StoredSubaddressBook.self, from: data)
+                book.ensurePrimaryExists()
+                return book
+            } catch {
+                throw WalletStorageError.decodingFailed
+            }
+        }
+        var book = StoredSubaddressBook()
+        book.ensurePrimaryExists()
+        return book
+    }
+
+    /// Save the subaddress book (account 0).
+    func saveSubaddressBook(_ book: StoredSubaddressBook) throws {
+        do {
+            let data = try JSONEncoder().encode(book)
+            defaults.set(data, forKey: subaddressesKey)
+        } catch {
+            throw WalletStorageError.encodingFailed
+        }
+    }
+
+    /// Create a new receive subaddress entry (account 0), persist it, and return it.
+    /// This does NOT derive the address string; derive it later from the mnemonic using WalletCoreFFI.
+    func createNewReceiveSubaddress(label: String = "") throws -> StoredSubaddressEntry {
+        var book = try loadSubaddressBook()
+        let entry = book.allocateNew(label: label)
+        try saveSubaddressBook(book)
+        return entry
+    }
+
+    /// Update the label for an existing subaddress entry (account 0).
+    func updateReceiveSubaddressLabel(subaddressIndex: UInt32, label: String) throws {
+        var book = try loadSubaddressBook()
+        guard let i = book.entries.firstIndex(where: { $0.accountIndex == 0 && $0.subaddressIndex == subaddressIndex }) else {
+            // If entry doesn't exist, ignore to keep UX forgiving.
+            return
+        }
+        book.entries[i].label = label
+        try saveSubaddressBook(book)
     }
 
     // MARK: - Private helpers

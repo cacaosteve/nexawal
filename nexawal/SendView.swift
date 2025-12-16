@@ -18,12 +18,45 @@ struct SendView: View {
     @State private var errorMessage: String?
     @State private var infoMessage: String?
 
+    // Subaddress send selection (account 0 only for MVP)
+    @State private var fromSubaddressMinor: UInt32 = 0
+    @State private var sendFromSubaddressEnabled: Bool = false
+    @State private var subaddressUnlockedOverride: UInt64?
+
     // Outputs
     @State private var estimatedFeePiconero: UInt64?
     @State private var sentTxid: String?
     @State private var sentFeePiconero: UInt64?
 
     private let walletManager = WalletManager.shared
+
+    private func availablePiconero() -> UInt64 {
+        if sendFromSubaddressEnabled, let v = subaddressUnlockedOverride {
+            return v
+        }
+        return viewModel.unlockedBalance
+    }
+
+    private func availableLabel() -> String {
+        if sendFromSubaddressEnabled {
+            return "Available (selected subaddress)"
+        }
+        return "Available"
+    }
+
+    private func refreshSubaddressBalanceIfNeeded() async {
+        guard sendFromSubaddressEnabled else {
+            subaddressUnlockedOverride = nil
+            return
+        }
+        do {
+            let bal = try await walletManager.getBalance(fromSubaddressMinor: fromSubaddressMinor)
+            subaddressUnlockedOverride = bal.unlocked
+        } catch {
+            // Best effort: if it fails, fall back to wallet-wide balance.
+            subaddressUnlockedOverride = nil
+        }
+    }
 
     var body: some View {
         NavigationView {
@@ -33,6 +66,25 @@ struct SendView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
+                }
+
+                Section(header: Text("From")) {
+                    Toggle("Send from specific subaddress", isOn: $sendFromSubaddressEnabled)
+
+                    if sendFromSubaddressEnabled {
+                        Picker("Subaddress", selection: $fromSubaddressMinor) {
+                            ForEach(viewModel.receiveSubaddresses, id: \.subaddressIndex) { e in
+                                let label = e.label.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let title = label.isEmpty ? "Subaddress \(e.subaddressIndex)" : label
+                                Text(title).tag(e.subaddressIndex)
+                            }
+                        }
+                        .pickerStyle(.menu)
+
+                        Text("Note: This constrains inputs to account 0, subaddress \(fromSubaddressMinor).")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 Section(header: Text("Amount")) {
@@ -47,9 +99,9 @@ struct SendView: View {
                     }
 
                     HStack {
-                        Text("Available")
+                        Text(availableLabel())
                         Spacer()
-                        Text(viewModel.formatXMR(viewModel.piconeroToXMR(viewModel.unlockedBalance)))
+                        Text(viewModel.formatXMR(viewModel.piconeroToXMR(availablePiconero())))
                             .font(.system(.caption, design: .monospaced))
                             .foregroundColor(.secondary)
                     }
@@ -204,6 +256,18 @@ struct SendView: View {
             sentTxid = nil
             sentFeePiconero = nil
             isMaxMode = false
+
+            // Ensure subaddress list is loaded for picker
+            Task {
+                await viewModel.loadReceiveSubaddresses()
+                await refreshSubaddressBalanceIfNeeded()
+            }
+        }
+        .onChange(of: sendFromSubaddressEnabled) { _ in
+            Task { await refreshSubaddressBalanceIfNeeded() }
+        }
+        .onChange(of: fromSubaddressMinor) { _ in
+            Task { await refreshSubaddressBalanceIfNeeded() }
         }
     }
 
@@ -227,10 +291,22 @@ struct SendView: View {
         isMaxMode = false
 
         do {
-            let fee = try await walletManager.previewFee(toAddress: toAddress, amountPiconero: amountPico, ringLen: ring)
+            let fee: UInt64
+            if sendFromSubaddressEnabled {
+                fee = try await walletManager.previewFee(
+                    fromSubaddressMinor: fromSubaddressMinor,
+                    toAddress: toAddress,
+                    amountPiconero: amountPico,
+                    ringLen: ring
+                )
+                infoMessage = "Fee estimated (inputs constrained to selected subaddress)."
+            } else {
+                fee = try await walletManager.previewFee(toAddress: toAddress, amountPiconero: amountPico, ringLen: ring)
+                infoMessage = "Fee estimated using broadcast policy."
+            }
+
             estimatedFeePiconero = fee
             previewReady = true
-            infoMessage = "Fee estimated using broadcast policy."
         } catch {
             previewReady = false
             errorMessage = "Fee preview failed: \(error.localizedDescription)"
@@ -259,7 +335,15 @@ struct SendView: View {
         do {
             if isMaxMode {
                 // In max mode, always sweep at send time so fee changes are handled correctly.
-                let result = try await walletManager.sweep(toAddress: toAddress, ringLen: ring)
+                let result: (txid: String, amount: UInt64, fee: UInt64)
+                if sendFromSubaddressEnabled {
+                    result = try await walletManager.sweep(fromSubaddressMinor: fromSubaddressMinor, toAddress: toAddress, ringLen: ring)
+                    infoMessage = "Swept max spendable from selected subaddress via \(policyText())."
+                } else {
+                    result = try await walletManager.sweep(toAddress: toAddress, ringLen: ring)
+                    infoMessage = "Swept max spendable via \(policyText())."
+                }
+
                 sentTxid = result.txid
                 sentFeePiconero = result.fee
                 estimatedFeePiconero = result.fee
@@ -267,8 +351,6 @@ struct SendView: View {
                 // Keep UI honest: set the amount field to what was actually sent.
                 let xmr = viewModel.piconeroToXMR(result.amount)
                 amountXMR = String(format: "%.12f", xmr)
-
-                infoMessage = "Swept max spendable via \(policyText())."
             } else {
                 guard let amountPico = parsedAmountPiconero() else {
                     errorMessage = "Enter a valid address and amount."
@@ -276,29 +358,44 @@ struct SendView: View {
                     return
                 }
 
-                // Balance sanity check for exact-amount sends
+                // Balance sanity check for exact-amount sends.
+                // If sending from a subaddress, validate against that subaddress's unlocked balance.
+                let available = availablePiconero()
                 if let fee = estimatedFeePiconero {
                     let total = safeAdd(amountPico, fee)
-                    if total > viewModel.unlockedBalance {
+                    if total > available {
                         errorMessage = "Insufficient unlocked balance for amount + fee."
                         isSending = false
                         return
                     }
-                } else if amountPico > viewModel.unlockedBalance {
+                } else if amountPico > available {
                     errorMessage = "Insufficient unlocked balance."
                     isSending = false
                     return
                 }
 
-                let result = try await walletManager.send(toAddress: toAddress, amountPiconero: amountPico, ringLen: ring)
+                let result: (txid: String, fee: UInt64)
+                if sendFromSubaddressEnabled {
+                    result = try await walletManager.send(
+                        fromSubaddressMinor: fromSubaddressMinor,
+                        toAddress: toAddress,
+                        amountPiconero: amountPico,
+                        ringLen: ring
+                    )
+                    infoMessage = "Transaction broadcast from selected subaddress via \(policyText())."
+                } else {
+                    result = try await walletManager.send(toAddress: toAddress, amountPiconero: amountPico, ringLen: ring)
+                    infoMessage = "Transaction broadcast via \(policyText())."
+                }
+
                 sentTxid = result.txid
                 sentFeePiconero = result.fee
                 estimatedFeePiconero = result.fee
-                infoMessage = "Transaction broadcast via \(policyText())."
             }
 
             // Refresh balance after send
             await viewModel.updateBalance()
+            await refreshSubaddressBalanceIfNeeded()
         } catch {
             errorMessage = "Send failed: \(error.localizedDescription)"
         }
@@ -388,8 +485,13 @@ struct SendView: View {
         let ring = parsedRingLen() ?? 16
 
         do {
-            // Ask the core to compute the maximum sendable amount (unlocked - fee).
-            let res = try await walletManager.previewSweep(toAddress: toAddress, ringLen: ring)
+            let res: (amount: UInt64, fee: UInt64)
+            if sendFromSubaddressEnabled {
+                res = try await walletManager.previewSweep(fromSubaddressMinor: fromSubaddressMinor, toAddress: toAddress, ringLen: ring)
+            } else {
+                res = try await walletManager.previewSweep(toAddress: toAddress, ringLen: ring)
+            }
+
             let amount = res.amount
             let fee = res.fee
 

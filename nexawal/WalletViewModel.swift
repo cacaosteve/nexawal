@@ -4,6 +4,9 @@ import MoneroWalletCoreFFI
 import Combine
 import CryptoKit
 
+// Receive subaddresses (account 0)
+typealias ReceiveSubaddressEntry = StoredSubaddressEntry
+
 @MainActor
 class WalletViewModel: ObservableObject {
     // MARK: - Published properties
@@ -15,6 +18,10 @@ class WalletViewModel: ObservableObject {
 
     // Transaction history (transfer-level)
     @Published var transfers: [WalletCoreFFIClient.Transfer] = []
+
+    // Receive subaddresses (account 0)
+    @Published var receiveSubaddresses: [ReceiveSubaddressEntry] = []
+    @Published var selectedReceiveSubaddressIndex: UInt32 = 0
 
     @Published var isLoading: Bool = false
     @Published var isRefreshing: Bool = false
@@ -104,6 +111,65 @@ class WalletViewModel: ObservableObject {
 
     func piconeroToXMR(_ piconero: UInt64) -> Double {
         Double(piconero) / 1_000_000_000_000.0
+    }
+
+    /// Derive the receive address for (account 0, selected subaddress minor).
+    /// Falls back to the primary address if derivation fails.
+    func currentReceiveAddress() -> String {
+        guard !mnemonic.isEmpty else { return walletAddress }
+        do {
+            return try WalletCoreFFIClient.deriveSubaddressFromMnemonic(
+                mnemonic,
+                accountIndex: 0,
+                subaddressIndex: selectedReceiveSubaddressIndex,
+                mainnet: isMainnet
+            )
+        } catch {
+            return walletAddress
+        }
+    }
+
+    /// Reload the persisted subaddress book and publish it.
+    func loadReceiveSubaddresses() async {
+        do {
+            let book = try await storage.loadSubaddressBook()
+            receiveSubaddresses = book.entries
+                .filter { $0.accountIndex == 0 }
+                .sorted { a, b in
+                    if a.subaddressIndex != b.subaddressIndex { return a.subaddressIndex < b.subaddressIndex }
+                    return a.createdAt < b.createdAt
+                }
+
+            // Ensure selection is valid
+            if !receiveSubaddresses.contains(where: { $0.subaddressIndex == selectedReceiveSubaddressIndex }) {
+                selectedReceiveSubaddressIndex = 0
+            }
+        } catch {
+            // Best effort; keep UI usable
+            receiveSubaddresses = [ReceiveSubaddressEntry(accountIndex: 0, subaddressIndex: 0, label: "Primary")]
+            selectedReceiveSubaddressIndex = 0
+        }
+    }
+
+    /// Create a new receive subaddress (account 0), persist it, and select it.
+    func createNewReceiveSubaddress(label: String = "") async {
+        do {
+            let entry = try await storage.createNewReceiveSubaddress(label: label)
+            await loadReceiveSubaddresses()
+            selectedReceiveSubaddressIndex = entry.subaddressIndex
+        } catch {
+            // Best effort; keep existing list
+        }
+    }
+
+    /// Update the label for a receive subaddress and refresh list.
+    func updateReceiveSubaddressLabel(subaddressIndex: UInt32, label: String) async {
+        do {
+            try await storage.updateReceiveSubaddressLabel(subaddressIndex: subaddressIndex, label: label)
+            await loadReceiveSubaddresses()
+        } catch {
+            // Best effort
+        }
     }
 
     /// Returns true if a wallet is persisted on device (metadata exists).
@@ -223,6 +289,9 @@ class WalletViewModel: ObservableObject {
             walletAddress = address
             biometricsEnabled = requireBiometrics
             self.restoreHeight = restoreHeight
+
+            // Load receive subaddresses for this wallet session.
+            await loadReceiveSubaddresses()
             lastScannedHeight = restoreHeight
             chainHeight = restoreHeight
             chainTime = 0
@@ -595,6 +664,9 @@ class WalletViewModel: ObservableObject {
                 mainnet: metadata.mainnet
             )
             walletAddress = address
+
+            // Load receive subaddresses for this wallet session.
+            await loadReceiveSubaddresses()
 
             // Open with the persisted restore height for this wallet.
             // If the user later replaces the seed, createWallet() will clear metadata+cache first.
