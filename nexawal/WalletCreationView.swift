@@ -167,10 +167,10 @@ struct WalletCreationView: View {
             // This is UI-only guidance; actual application happens in createOrImport().
             await refreshSuggestedRestoreHeightIfNeeded()
         }
-        .onChange(of: setupMode) { _ in
+        .onChange(of: setupMode) {
             Task { await refreshSuggestedRestoreHeightIfNeeded() }
         }
-        .onChange(of: isMainnet) { _ in
+        .onChange(of: isMainnet) {
             Task { await refreshSuggestedRestoreHeightIfNeeded() }
         }
     }

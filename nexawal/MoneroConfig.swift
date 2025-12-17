@@ -10,28 +10,31 @@ import Foundation
 import Darwin
 
 struct MoneroConfig {
-    nonisolated(unsafe) static let defaultAddress = "192.168.4.137:18081"
-    nonisolated(unsafe) static let userDefaultsKey = "monero_daemon_address"
+    // These are simple constants. Mark them as nonisolated (not unsafe) so they can be used from
+    // nonisolated computed properties without triggering global-actor isolation warnings, while
+    // still avoiding unnecessary `unsafe` annotations.
+    nonisolated static let defaultAddress = "192.168.4.137:18081"
+    nonisolated static let userDefaultsKey = "monero_daemon_address"
 
     // I2P defaults and keys
-    nonisolated(unsafe) static let defaultI2PRPCAddress = "cvxtgqjorfif6i5x5fenys6fj7hzddbgavpyutps6gphywnlklqa.b32.i2p:18089"
-    nonisolated(unsafe) static let userDefaultsI2PModeKey = "monero_i2p_mode"
-    nonisolated(unsafe) static let userDefaultsI2PRPCKey = "monero_i2p_rpc_address"
-    nonisolated(unsafe) static let userDefaultsI2PProxyKey = "monero_i2p_http_proxy"
+    nonisolated static let defaultI2PRPCAddress = "cvxtgqjorfif6i5x5fenys6fj7hzddbgavpyutps6gphywnlklqa.b32.i2p:18089"
+    nonisolated static let userDefaultsI2PModeKey = "monero_i2p_mode"
+    nonisolated static let userDefaultsI2PRPCKey = "monero_i2p_rpc_address"
+    nonisolated static let userDefaultsI2PProxyKey = "monero_i2p_http_proxy"
     // Gap limit key and default
-        nonisolated(unsafe) static let userDefaultsGapLimitKey = "monero_gap_limit"
-        nonisolated(unsafe) static let defaultGapLimit: UInt32 = 50
+        nonisolated static let userDefaultsGapLimitKey = "monero_gap_limit"
+        nonisolated static let defaultGapLimit: UInt32 = 50
         // Scan tuning keys and defaults
-        nonisolated(unsafe) static let userDefaultsScanParKey = "walletcore_scan_par"
-        nonisolated(unsafe) static let userDefaultsScanBatchKey = "walletcore_scan_batch"
-        nonisolated(unsafe) static let defaultScanPar: Int = 0
-        nonisolated(unsafe) static let defaultScanBatch: Int = 200
+        nonisolated static let userDefaultsScanParKey = "walletcore_scan_par"
+        nonisolated static let userDefaultsScanBatchKey = "walletcore_scan_batch"
+        nonisolated static let defaultScanPar: Int = 0
+        nonisolated static let defaultScanBatch: Int = 200
         // Account lookahead (major) key and default
-        nonisolated(unsafe) static let userDefaultsAccountGapKey = "walletcore_account_gap"
-        nonisolated(unsafe) static let defaultAccountGap: Int = 1
+        nonisolated static let userDefaultsAccountGapKey = "walletcore_account_gap"
+        nonisolated static let defaultAccountGap: Int = 1
         // Network policy keys and defaults (clearnet only, i2p only, hybrid: scan clearnet, broadcast i2p)
-        nonisolated(unsafe) static let userDefaultsNetworkPolicyKey = "monero_network_policy"
-        nonisolated(unsafe) static let defaultNetworkPolicyRaw = "clearnet"
+        nonisolated static let userDefaultsNetworkPolicyKey = "monero_network_policy"
+        nonisolated static let defaultNetworkPolicyRaw = "clearnet"
 
         enum NetworkPolicy: String {
             case clearnet     // scan + broadcast over clearnet
@@ -90,9 +93,9 @@ struct MoneroConfig {
             urlFromAddress(broadcastNodeAddress())
         }
         // Scan mode and per-node profiles (Auto/Manual + last known good tuning)
-        nonisolated(unsafe) static let userDefaultsScanModeKey = "monero_scan_mode"
-        nonisolated(unsafe) static let userDefaultsScanProfilesKey = "monero_scan_profiles"
-        nonisolated(unsafe) static let defaultScanModeRaw = "auto"
+        nonisolated static let userDefaultsScanModeKey = "monero_scan_mode"
+        nonisolated static let userDefaultsScanProfilesKey = "monero_scan_profiles"
+        nonisolated static let defaultScanModeRaw = "auto"
 
         enum ScanMode: String {
             case auto
@@ -106,8 +109,8 @@ struct MoneroConfig {
         }
 
         // Baseline reliable tuning used by Auto mode for restores and fallback
-        nonisolated(unsafe) static let baselinePar: Int = 0
-        nonisolated(unsafe) static let baselineBatch: Int = 150
+        nonisolated static let baselinePar: Int = 0
+        nonisolated static let baselineBatch: Int = 150
 
     /// Monero daemon address (hostname:port format)
     /// Defaults to local dev server, can be overridden via environment or settings

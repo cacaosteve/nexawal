@@ -215,7 +215,7 @@ actor WalletManager {
 
     private func waitForRefreshCompletion(using walletId: String, stallTimeout: TimeInterval = 45, pollInterval: TimeInterval = 0.2) async throws -> WalletCoreFFIClient.SyncStatus {
         // Stall-based wait (no fixed deadline)
-        let toleranceBlocks: UInt64 = 3
+
 
         var targetHeight: UInt64?
         var lastProgressAt = Date()
@@ -264,16 +264,13 @@ actor WalletManager {
             if let target = targetHeight {
                 let effectiveTarget = max(target, status.restoreHeight)
 
-                // Check for completion against the fixed target height
+                // Completion is based on the fixed target height snapshot.
+                //
+                // IMPORTANT:
+                // Do NOT return early "within tolerance" here. That can skip the last few blocks
+                // of the fixed target window and miss incoming transfers (exactly what we observed).
                 if effectiveTarget > 0, status.lastScanned >= effectiveTarget {
                     print("✅ Refresh reached target height \(effectiveTarget) (lastScanned=\(status.lastScanned))")
-                    return status
-                }
-
-                // Accept near-target within a small tolerance to avoid hanging on a moving tip
-                if effectiveTarget > 0,
-                   status.lastScanned + toleranceBlocks >= effectiveTarget {
-                    print("⚠️ Refresh within tolerance (\(toleranceBlocks)) of target \(effectiveTarget); proceeding (lastScanned=\(status.lastScanned))")
                     return status
                 }
             }

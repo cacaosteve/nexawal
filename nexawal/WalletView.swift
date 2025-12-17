@@ -629,10 +629,12 @@ struct SettingsView: View {
                             .foregroundColor(.secondary)
 
                         Button(role: .destructive) {
-                            do {
-                                try WalletManager.shared.clearScanCache()
-                            } catch {
-                                print("⚠️ Clear cache failed: \(error)")
+                            Task {
+                                do {
+                                    try await WalletManager.shared.clearScanCache()
+                                } catch {
+                                    print("⚠️ Clear cache failed: \(error)")
+                                }
                             }
                         } label: {
                             Text("Clear scan cache (this network)")

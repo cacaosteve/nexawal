@@ -146,7 +146,7 @@ class WalletViewModel: ObservableObject {
             }
         } catch {
             // Best effort; keep UI usable
-            receiveSubaddresses = [ReceiveSubaddressEntry(accountIndex: 0, subaddressIndex: 0, label: "Primary")]
+            receiveSubaddresses = [ReceiveSubaddressEntry(accountIndex: 0, subaddressIndex: 0, label: "Primary", createdAt: Date())]
             selectedReceiveSubaddressIndex = 0
         }
     }
@@ -179,6 +179,17 @@ class WalletViewModel: ObservableObject {
             return (try await storage.loadMetadata()) != nil
         } catch {
             return false
+        }
+    }
+
+    func formatXMR(_ amount: Double) -> String {
+        switch amount {
+        case let value where value >= 1.0:
+            return String(format: "%.4f XMR", value)
+        case let value where value >= 0.0001:
+            return String(format: "%.6f XMR", value)
+        default:
+            return String(format: "%.12f XMR", amount)
         }
     }
 
@@ -237,17 +248,6 @@ class WalletViewModel: ObservableObject {
             mainnet: mainnet,
             requireBiometrics: requireBiometrics
         )
-    }
-
-    func formatXMR(_ amount: Double) -> String {
-        switch amount {
-        case let value where value >= 1.0:
-            return String(format: "%.4f XMR", value)
-        case let value where value >= 0.0001:
-            return String(format: "%.6f XMR", value)
-        default:
-            return String(format: "%.12f XMR", amount)
-        }
     }
 
     /// Create/import a wallet in the single-wallet slot.
@@ -532,19 +532,15 @@ class WalletViewModel: ObservableObject {
                     }
 
                     if shouldPollTransfers {
-                        do {
-                            let rows = try await MainActor.run { () -> [WalletCoreFFIClient.Transfer]? in
-                                // WalletManager is an actor; avoid calling actor-isolated methods from this main-actor block.
-                                return try? WalletCoreFFIClient.listTransfers(walletId: self.walletId)
+                        let rows = await MainActor.run { () -> [WalletCoreFFIClient.Transfer]? in
+                            // WalletManager is an actor; avoid calling actor-isolated methods from this main-actor block.
+                            return try? WalletCoreFFIClient.listTransfers(walletId: self.walletId)
+                        }
+                        if let rows {
+                            await MainActor.run {
+                                self.transfers = rows
+                                self.lastTransfersPollAt = Date()
                             }
-                            if let rows {
-                                await MainActor.run {
-                                    self.transfers = rows
-                                    self.lastTransfersPollAt = Date()
-                                }
-                            }
-                        } catch {
-                            // Ignore intermittent transfer fetch errors during sync; final refresh will update transfers.
                         }
                     }
                 } catch {

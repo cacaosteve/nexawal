@@ -263,10 +263,10 @@ struct SendView: View {
                 await refreshSubaddressBalanceIfNeeded()
             }
         }
-        .onChange(of: sendFromSubaddressEnabled) { _ in
+        .onChange(of: sendFromSubaddressEnabled) {
             Task { await refreshSubaddressBalanceIfNeeded() }
         }
-        .onChange(of: fromSubaddressMinor) { _ in
+        .onChange(of: fromSubaddressMinor) {
             Task { await refreshSubaddressBalanceIfNeeded() }
         }
     }

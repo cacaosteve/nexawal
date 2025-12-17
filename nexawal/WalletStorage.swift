@@ -100,7 +100,7 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
         case lastUpdated
     }
 
-    nonisolated(unsafe) init(from decoder: Decoder) throws {
+    nonisolated init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         walletId = try container.decode(String.self, forKey: .walletId)
         restoreHeight = try container.decodeIfPresent(UInt64.self, forKey: .restoreHeight) ?? 0
@@ -115,7 +115,7 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
         lastUpdated = try container.decodeIfPresent(Date.self, forKey: .lastUpdated) ?? creation
     }
 
-    nonisolated(unsafe) func encode(to encoder: Encoder) throws {
+    nonisolated func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(walletId, forKey: .walletId)
         try container.encode(restoreHeight, forKey: .restoreHeight)
@@ -132,7 +132,7 @@ struct StoredWalletMetadata: Codable, Equatable, Sendable {
 
 // MARK: - Receive subaddress book (Account 0)
 
-struct StoredSubaddressEntry: Codable, Equatable, Sendable, Identifiable {
+nonisolated struct StoredSubaddressEntry: Codable, Equatable, Sendable, Identifiable {
     /// Always account 0 for now.
     let accountIndex: UInt32
     /// Subaddress minor index.
@@ -144,7 +144,7 @@ struct StoredSubaddressEntry: Codable, Equatable, Sendable, Identifiable {
 
     var id: String { "a\(accountIndex)-s\(subaddressIndex)" }
 
-    init(accountIndex: UInt32 = 0, subaddressIndex: UInt32, label: String = "", createdAt: Date = Date()) {
+    init(accountIndex: UInt32 = 0, subaddressIndex: UInt32, label: String = "", createdAt: Date) {
         self.accountIndex = accountIndex
         self.subaddressIndex = subaddressIndex
         self.label = label
@@ -152,7 +152,7 @@ struct StoredSubaddressEntry: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-struct StoredSubaddressBook: Codable, Equatable, Sendable {
+nonisolated struct StoredSubaddressBook: Codable, Equatable, Sendable {
     /// Always 0 for MVP (account 0).
     var accountIndex: UInt32 = 0
     /// Next minor index to allocate for "New address".
@@ -160,23 +160,29 @@ struct StoredSubaddressBook: Codable, Equatable, Sendable {
     /// Stored entries for account 0.
     var entries: [StoredSubaddressEntry] = []
 
+    init() {}
+
+    // Pure value-type helpers (no actor isolation intended).
     mutating func ensurePrimaryExists() {
         if !entries.contains(where: { $0.accountIndex == 0 && $0.subaddressIndex == 0 }) {
-            entries.insert(StoredSubaddressEntry(accountIndex: 0, subaddressIndex: 0, label: "Primary"), at: 0)
+            entries.insert(StoredSubaddressEntry(accountIndex: 0, subaddressIndex: 0, label: "Primary", createdAt: Date()), at: 0)
         }
         // Ensure next index is always > max existing (excluding primary).
         let maxExisting = entries
             .filter { $0.accountIndex == 0 }
             .map { $0.subaddressIndex }
             .max() ?? 0
-        nextSubaddressIndex = max(nextSubaddressIndex, maxExisting.saturating_add(1))
+        let (next, overflow) = maxExisting.addingReportingOverflow(1)
+        let minNext = overflow ? UInt32.max : next
+        nextSubaddressIndex = max(nextSubaddressIndex, minNext)
     }
 
     mutating func allocateNew(label: String = "") -> StoredSubaddressEntry {
         ensurePrimaryExists()
         let idx = nextSubaddressIndex
-        nextSubaddressIndex = nextSubaddressIndex.saturating_add(1)
-        let e = StoredSubaddressEntry(accountIndex: 0, subaddressIndex: idx, label: label)
+        let (next, overflow) = nextSubaddressIndex.addingReportingOverflow(1)
+        nextSubaddressIndex = overflow ? UInt32.max : next
+        let e = StoredSubaddressEntry(accountIndex: 0, subaddressIndex: idx, label: label, createdAt: Date())
         entries.append(e)
         return e
     }

@@ -23,10 +23,10 @@ struct nexawalApp: App {
         WindowGroup {
             ContentView(viewModel: viewModel)
         }
-        .onChange(of: scenePhase) { phase in
+        .onChange(of: scenePhase) {
             // Snapshot on either inactive or background, then resume on foreground.
             // We don't attempt to keep scanning in background; this is best-effort persistence only.
-            guard phase == .inactive || phase == .background else { return }
+            guard scenePhase == .inactive || scenePhase == .background else { return }
 
             let now = Date()
             guard now.timeIntervalSince(lastSnapshotAt) >= snapshotDebounceSeconds else { return }
