@@ -16,11 +16,20 @@ struct WalletCreationView: View {
 
     enum WalletSetupMode: String, CaseIterable, Identifiable {
         case create = "Create new wallet (fast)"
-        case `import` = "Import existing wallet (safe)"
+        case `import` = "Import existing wallet"
+        var id: String { rawValue }
+    }
+
+    enum ImportScanPreset: String, CaseIterable, Identifiable {
+        case safe = "Safe (sequential)"
+        case fast = "Fast (parallel)"
         var id: String { rawValue }
     }
 
     @State private var setupMode: WalletSetupMode = .import
+
+    // Import scan tuning presets (for experiments / quick switching)
+    @State private var importPreset: ImportScanPreset = .safe
 
     // Fast-restore-height (create mode only): we fetch daemon get_info and set restoreHeight = target_height - 10.
     @State private var suggestedRestoreHeight: UInt64?
@@ -81,22 +90,43 @@ struct WalletCreationView: View {
                         }
 
                     case .import:
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text("Restore Height:")
-                                TextField("0", text: $restoreHeightInput)
-                                    .keyboardType(.numberPad)
+                        VStack(alignment: .leading, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Import scan preset")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+
+                                Picker("Preset", selection: $importPreset) {
+                                    ForEach(ImportScanPreset.allCases) { preset in
+                                        Text(preset.rawValue).tag(preset)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+
+                                Text(importPreset == .fast
+                                     ? "Fast: uses parallel scan tuning (par=6, batch=200)."
+                                     : "Safe: uses sequential scan tuning (par=0, batch=150).")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
 
-                            let height = UInt64(restoreHeightInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-                            if height == 0 {
-                                Text("Tip: 0 scans the full chain history. This is the safest option if you’re unsure, but it can take longer to sync.")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            } else {
-                                Text("Warning: If you set a restore height after your first transaction, older funds will not appear until you rescan from an earlier height.")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text("Restore Height:")
+                                    TextField("0", text: $restoreHeightInput)
+                                        .keyboardType(.numberPad)
+                                }
+
+                                let height = UInt64(restoreHeightInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                                if height == 0 {
+                                    Text("Tip: 0 scans the full chain history. This is the safest option if you’re unsure, but it can take longer to sync.")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                } else {
+                                    Text("Warning: If you set a restore height after your first transaction, older funds will not appear until you rescan from an earlier height.")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
                             }
                         }
                     }
@@ -105,27 +135,76 @@ struct WalletCreationView: View {
                 }
 
                 Section {
-                    Button(action: {
-                        // If we already have a persisted wallet, confirm before replacing it.
-                        if hasStoredWallet {
-                            showReplaceConfirm = true
-                        } else {
-                            Task { await createOrImport(isReplace: false) }
-                        }
-                    }) {
-                        HStack {
-                            if viewModel.isLoading {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle())
+                    if setupMode == .import {
+                        VStack(spacing: 10) {
+                            Button(action: {
+                                // Force preset tuning for this import attempt.
+                                // Safe: sequential; Fast: parallel.
+                                // Force Manual mode so the preset par/batch is actually used (Auto mode can override).
+                                MoneroConfig.setScanMode(.manual)
+                                switch importPreset {
+                                case .safe:
+                                    MoneroConfig.setScanParallelism(0)
+                                    MoneroConfig.setScanBatchSize(150)
+                                case .fast:
+                                    MoneroConfig.setScanParallelism(6)
+                                    MoneroConfig.setScanBatchSize(200)
+                                }
+
+                                // If we already have a persisted wallet, confirm before replacing it.
+                                if hasStoredWallet {
+                                    showReplaceConfirm = true
+                                } else {
+                                    Task { await createOrImport(isReplace: false) }
+                                }
+                            }) {
+                                HStack {
+                                    if viewModel.isLoading {
+                                        ProgressView()
+                                            .progressViewStyle(CircularProgressViewStyle())
+                                    }
+                                    Text(viewModel.isLoading ? "Importing Wallet..." : "Import Wallet")
+                                }
                             }
-                            Text(viewModel.isLoading ? "Importing Wallet..." : "Create/Import Wallet")
+                            .disabled(viewModel.isLoading || mnemonicInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
+                    } else {
+                        Button(action: {
+                            // If we already have a persisted wallet, confirm before replacing it.
+                            if hasStoredWallet {
+                                showReplaceConfirm = true
+                            } else {
+                                Task { await createOrImport(isReplace: false) }
+                            }
+                        }) {
+                            HStack {
+                                if viewModel.isLoading {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle())
+                                }
+                                Text(viewModel.isLoading ? "Importing Wallet..." : "Create Wallet")
+                            }
+                        }
+                        .disabled(viewModel.isLoading || mnemonicInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
-                    .disabled(viewModel.isLoading || mnemonicInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .alert("Replace existing wallet?", isPresented: $showReplaceConfirm) {
                     Button("Cancel", role: .cancel) {}
                     Button("Replace", role: .destructive) {
+                        // Ensure we apply the selected import scan preset BEFORE starting the replace flow.
+                        // This makes the replace path consistent with the initial Import button path.
+                        if setupMode == .import {
+                            // Force Manual mode so the preset par/batch is actually used (Auto mode can override).
+                            MoneroConfig.setScanMode(.manual)
+                            switch importPreset {
+                            case .safe:
+                                MoneroConfig.setScanParallelism(0)
+                                MoneroConfig.setScanBatchSize(150)
+                            case .fast:
+                                MoneroConfig.setScanParallelism(6)
+                                MoneroConfig.setScanBatchSize(200)
+                            }
+                        }
                         Task { await createOrImport(isReplace: true) }
                     }
                 } message: {

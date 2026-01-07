@@ -28,6 +28,9 @@ class WalletViewModel: ObservableObject {
     @Published var isWalletOpen: Bool = false
     @Published var errorMessage: String?
 
+    // Keep a handle to the in-flight refresh so the UI can cancel it explicitly.
+    private var refreshTask: Task<Void, Never>?
+
     @Published var biometricsEnabled: Bool = false
     @Published var restoreHeight: UInt64 = 0
     @Published var lastScannedHeight: UInt64 = 0
@@ -337,33 +340,70 @@ class WalletViewModel: ObservableObject {
     func refreshWallet() async {
         guard isWalletOpen else { return }
 
+        // If one is already running, don't start another.
+        if refreshTask != nil { return }
+
         isRefreshing = true
         errorMessage = nil
         startSyncStatusPolling()
-        defer {
-            stopSyncStatusPolling()
-            isRefreshing = false
-        }
 
-        do {
-            let status = try await walletManager.refreshWallet()
-            applySyncStatus(status)
-
-            // Always do a final balance fetch at the end of refresh so totals are correct.
-            let balance = try await walletManager.getBalance()
-            totalBalance = balance.total
-            unlockedBalance = balance.unlocked
-
-            // Refresh transfer history at end of refresh (authoritative)
-            // WalletManager is an actor; avoid calling actor-isolated methods from this main-actor context.
-            if let rows = try? WalletCoreFFIClient.listTransfers(walletId: walletId) {
-                transfers = rows
+        // Run refresh in a tracked task so we can cancel it via `cancelRefresh()`.
+        refreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                Task { @MainActor in
+                    self.stopSyncStatusPolling()
+                    self.isRefreshing = false
+                    self.refreshTask = nil
+                }
             }
 
-            await persistMetadataUpdate()
-        } catch {
-            errorMessage = "Refresh failed: \(error.localizedDescription)"
+            do {
+                let status = try await self.walletManager.refreshWallet()
+                await MainActor.run {
+                    self.applySyncStatus(status)
+                }
+
+                // Always do a final balance fetch at the end of refresh so totals are correct.
+                let balance = try await self.walletManager.getBalance()
+                await MainActor.run {
+                    self.totalBalance = balance.total
+                    self.unlockedBalance = balance.unlocked
+                }
+
+                // Refresh transfer history at end of refresh (authoritative)
+                if let rows = try? WalletCoreFFIClient.listTransfers(walletId: self.walletId) {
+                    await MainActor.run { self.transfers = rows }
+                }
+
+                await self.persistMetadataUpdate()
+            } catch is CancellationError {
+                // User-cancelled refresh: keep UI calm; polling teardown happens in defer.
+                await MainActor.run { self.errorMessage = nil }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Refresh failed: \(error.localizedDescription)"
+                }
+            }
         }
+    }
+
+    /// Cancel an in-flight refresh (stops waiting/polling and returns control to UI).
+    /// Note: the core may continue scanning in the background; this is a UI-level cancel.
+    func cancelRefresh() {
+        guard isRefreshing else { return }
+
+        // Diagnostic: help identify *who* is triggering cancel (button tap vs lifecycle vs preemption).
+        // Swift doesn't provide a cheap full backtrace here, but call-site file/line is still useful.
+        let callsite = "\(#fileID):\(#line) \(#function)"
+        print("🛑 VM cancelRefresh() invoked (callsite=\(callsite)) isRefreshing=\(isRefreshing) hasTask=\(refreshTask != nil)")
+
+        refreshTask?.cancel()
+        refreshTask = nil
+
+        Task { await walletManager.cancelRefresh() }
+        stopSyncStatusPolling()
+        isRefreshing = false
     }
 
     /// Update balance without refreshing (quick check)
@@ -469,7 +509,13 @@ class WalletViewModel: ObservableObject {
                                 let dt = now.timeIntervalSince(lastUpdate)
                                 if dt > 0 {
                                     let db = Double(status.lastScanned) - Double(prev.lastScanned)
-                                    self.scanBlocksPerSecond = max(0.0, db / dt)
+                                    if db <= 0 {
+                                        self.scanBlocksPerSecond = 0.0
+                                    } else {
+                                        self.scanBlocksPerSecond = db / dt
+                                    }
+                                } else {
+                                    self.scanBlocksPerSecond = 0.0
                                 }
                             } else {
                                 self.scanBlocksPerSecond = 0.0

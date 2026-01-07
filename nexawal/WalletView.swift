@@ -427,7 +427,7 @@ struct WalletView: View {
                     .foregroundColor(.secondary)
                     .padding(.horizontal)
 
-                    // Refresh Button
+                    // Refresh / Cancel / Actions
                     HStack(spacing: 12) {
                         Button(action: {
                             Task {
@@ -451,32 +451,48 @@ struct WalletView: View {
                         }
                         .disabled(viewModel.isRefreshing)
 
-                        Button(action: {
-                            showSend = true
-                        }) {
-                            HStack {
-                                Image(systemName: "paperplane.fill")
-                                Text("Send")
+                        if viewModel.isRefreshing {
+                            Button(action: {
+                                viewModel.cancelRefresh()
+                            }) {
+                                HStack {
+                                    Image(systemName: "xmark.circle.fill")
+                                    Text("Cancel")
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.red.opacity(0.9))
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.orange.opacity(0.9))
-                            .foregroundColor(.white)
-                            .cornerRadius(12)
-                        }
+                        } else {
+                            Button(action: {
+                                showSend = true
+                            }) {
+                                HStack {
+                                    Image(systemName: "paperplane.fill")
+                                    Text("Send")
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.orange.opacity(0.9))
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
+                            }
 
-                        Button(action: {
-                            showReceive = true
-                        }) {
-                            HStack {
-                                Image(systemName: "qrcode")
-                                Text("Receive")
+                            Button(action: {
+                                showReceive = true
+                            }) {
+                                HStack {
+                                    Image(systemName: "qrcode")
+                                    Text("Receive")
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.green.opacity(0.9))
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.green.opacity(0.9))
-                            .foregroundColor(.white)
-                            .cornerRadius(12)
                         }
                     }
                     .padding(.horizontal)
@@ -612,6 +628,15 @@ struct SettingsView: View {
                     }
                     Section(header: Text("Scanning")) {
                         Toggle("Scan Mode: Auto", isOn: $scanModeIsAuto)
+
+                        Toggle("Bulk .bin fetch (experimental)", isOn: Binding(
+                            get: { MoneroConfig.bulkBinFetchEnabled },
+                            set: { MoneroConfig.setBulkBinFetchEnabled($0) }
+                        ))
+                        Text("Uses monerod binary bulk endpoints for faster syncing on supported nodes. Disable if you see stalls or incomplete responses.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
                         TextField("Gap limit (1-100000)", text: $gapLimitInput)
                             .keyboardType(.numberPad)
                             .autocorrectionDisabled()

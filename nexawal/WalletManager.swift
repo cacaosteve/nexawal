@@ -2,10 +2,18 @@
 //  WalletManager.swift
 //  nexawal
 //
-//  Manages Monero wallet operations using MoneroWalletCoreFFI
+//  Created by steve on 12/1/25.
 //
 
 import Foundation
+
+#if DEBUG
+// Debug-only: force deterministic wallet2 bulk sync settings so UI toggles don't affect decoding work.
+// This is intentionally scoped to DEBUG builds to keep production behavior unchanged.
+private let WALLET2_DEBUG_FORCE_ENABLED = true
+private let WALLET2_DEBUG_FORCE_PAR = 8
+private let WALLET2_DEBUG_FORCE_BATCH = 200
+#endif
 import MoneroWalletCoreFFI
 
 enum WalletError: LocalizedError {
@@ -43,6 +51,14 @@ actor WalletManager {
     private var refreshPar: Int = 0
     private var refreshBatch: Int = 0
     private var currentNetworkMainnet: Bool = true
+
+    // Explicit cancellation support for refresh.
+    // We can't cancel the Rust-side sync directly, but we can:
+    //  - cancel the waiter/poller task
+    //  - persist best-effort cache progress
+    //  - mark refresh as no longer in progress so UI can recover
+    private var refreshWaitTask: Task<WalletCoreFFIClient.SyncStatus, Error>?
+    private var refreshCancelRequested: Bool = false
 
     private init() {}
 
@@ -113,14 +129,30 @@ actor WalletManager {
             return try getSyncStatus()
         }
         refreshInProgress = true
+        refreshCancelRequested = false
 
         applyNetworkProxy()
         applyScanTuning()
+        // Always pass an explicit node URL into the core so bulk modes are eligible even when the app is using a "default" node.
+        // Passing `nil` forces the core into per-block mode due to the clearnet gating check.
         let nodeURL = MoneroConfig.scanNodeURL()
-        defer { refreshInProgress = false }
+        print("🌐 Refresh starting with nodeURL=\(nodeURL)")
+        defer {
+            refreshInProgress = false
+            refreshCancelRequested = false
+            refreshWaitTask = nil
+        }
 
         do {
-            let status = try await performRefresh(walletId: walletId, nodeURL: nodeURL)
+            // Run the refresh in a dedicated task so UI can request cancellation explicitly.
+            let waitTask = Task { () throws -> WalletCoreFFIClient.SyncStatus in
+                // performRefresh triggers refreshWalletAsync then waits/polls for completion
+                return try await performRefresh(walletId: walletId, nodeURL: nodeURL)
+            }
+            refreshWaitTask = waitTask
+
+            let status = try await waitTask.value
+
             // Final export at end of refresh (authoritative)
             exportCacheAndPersist(for: walletId)
             cachedBalance = nil
@@ -131,12 +163,27 @@ actor WalletManager {
             exportCacheAndPersist(for: walletId)
 
             do {
-                if (nodeError as? CancellationError) != nil {
-                    print("ℹ️ Refresh cancelled by system; returning latest status")
+                // If the user requested cancel, treat it as a cancellation path (even if it isn't a CancellationError).
+                if refreshCancelRequested || (nodeError as? CancellationError) != nil {
+                    print("ℹ️ Refresh cancelled; returning latest status")
                     cachedBalance = nil
                     return try WalletCoreFFIClient.syncStatus(walletId: walletId)
                 }
                 print("⚠️ Refresh with nodeURL '\(nodeURL)' failed: \(nodeError.localizedDescription)")
+
+                // Record wallet2 bulk lockout immediately on deterministic `/getblocks.bin` decode failures.
+                // Rationale: relying only on the polling-loop `lastErrorMessage()` path can miss fast-fail decode errors,
+                // which then leads to repeated stall/retry loops and unwanted tuning changes.
+                let coreLastErr = WalletCoreFFIClient.lastErrorMessage() ?? ""
+                let combinedErr = ([nodeError.localizedDescription, coreLastErr])
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
+                if MoneroConfig.isDeterministicWallet2DecodeFailure(combinedErr) {
+                    await MainActor.run {
+                        MoneroConfig.lockOutWallet2BulkForCurrentNode()
+                    }
+                    print("🧯 Recorded wallet2 bulk lockout from refresh failure; err=\(combinedErr)")
+                }
                 // If core reports a parallel stall/channel error, auto-fallback to sequential scan on the same node first
                 if isParallelWorkerStall(nodeError.localizedDescription) {
                     await MainActor.run {
@@ -149,8 +196,8 @@ actor WalletManager {
                     cachedBalance = nil
                     return seqStatus
                 }
-                print("⚠️ Attempting refresh without nodeURL (using wallet core default)...")
-                let fallbackStatus = try await performRefresh(walletId: walletId, nodeURL: nil)
+                print("⚠️ Attempting refresh retry with explicit nodeURL again (core requires non-nil node URL to enable bulk modes)...")
+                let fallbackStatus = try await performRefresh(walletId: walletId, nodeURL: nodeURL)
                 exportCacheAndPersist(for: walletId)
                 cachedBalance = nil
                 print("✅ Refresh succeeded using wallet core default node")
@@ -209,14 +256,48 @@ actor WalletManager {
     }
 
     private func performRefresh(walletId: String, nodeURL: String?) async throws -> WalletCoreFFIClient.SyncStatus {
-        try WalletCoreFFIClient.refreshWalletAsync(walletId: walletId, nodeURL: nodeURL)
+        let effectiveURL = nodeURL ?? MoneroConfig.scanNodeURL()
+        print("🌐 performRefresh(walletId=\(walletId)) using nodeURL=\(effectiveURL)")
+        try WalletCoreFFIClient.refreshWalletAsync(walletId: walletId, nodeURL: effectiveURL)
         return try await waitForRefreshCompletion(using: walletId)
     }
 
+    /// Request cancellation of the in-flight refresh.
+    ///
+    /// This will:
+    /// - ask the Rust core to cancel the active refresh loop (best-effort)
+    /// - cancel the Swift wait/poll task
+    /// - persist best-effort cache progress so a later refresh resumes faster
+    func cancelRefresh() {
+        guard refreshInProgress else { return }
+        refreshCancelRequested = true
+
+        // Ask the core to cancel the active refresh loop (best-effort).
+        do {
+            if let walletId = currentWalletId {
+                try WalletCoreFFIClient.refreshCancel(walletId: walletId)
+            } else {
+                print("⚠️ Core refresh cancel requested, but no wallet is currently open")
+            }
+        } catch {
+            // Don't fail UI cancel if core cancel isn't available; still cancel waiting/polling.
+            print("⚠️ Core refresh cancel request failed: \(error.localizedDescription)")
+        }
+
+        // Cancel the Swift wait/poll task so UI returns control immediately.
+        refreshWaitTask?.cancel()
+
+        if let walletId = currentWalletId {
+            exportCacheAndPersist(for: walletId)
+            print("🗂️ Cache export reason: cancel walletId=\(walletId)")
+        }
+        cachedBalance = nil
+        refreshInProgress = false
+        refreshWaitTask = nil
+        print("🛑 Cancel refresh requested")
+    }
+
     private func waitForRefreshCompletion(using walletId: String, stallTimeout: TimeInterval = 45, pollInterval: TimeInterval = 0.2) async throws -> WalletCoreFFIClient.SyncStatus {
-        // Stall-based wait (no fixed deadline)
-
-
         var targetHeight: UInt64?
         var lastProgressAt = Date()
         var lastScannedSnapshot: UInt64 = 0
@@ -224,6 +305,13 @@ actor WalletManager {
         // Periodic persistence while refresh is running
         var lastPersistAt = Date.distantPast
         let persistInterval: TimeInterval = 15.0
+
+        // Periodically sample core error state even if progress is happening.
+        // Rationale: wallet2 `/getblocks.bin` decode failures can trigger an internal core fallback
+        // (so lastScanned continues advancing), which means a "no progress" gate can miss the error.
+        var lastCoreErrSampleAt = Date.distantPast
+        let coreErrSampleInterval: TimeInterval = 1.0
+        var wallet2LockoutRecordedThisRefresh = false
 
         // Scale stall timeout based on scan tuning
         let par = refreshPar
@@ -234,6 +322,13 @@ actor WalletManager {
             min(300.0, max(45.0, (par > 0 ? Double(batch) * 0.15 : Double(batch) * 0.08)))
         )
 
+        // If the UI requested cancel, exit early.
+        if refreshCancelRequested || Task.isCancelled {
+            exportCacheAndPersist(for: walletId)
+            print("🗂️ Cache export reason: cancel walletId=\(walletId)")
+            throw CancellationError()
+        }
+
         while true {
             let status = try WalletCoreFFIClient.syncStatus(walletId: walletId)
 
@@ -242,6 +337,24 @@ actor WalletManager {
             if targetHeight == nil, status.chainHeight > status.restoreHeight {
                 targetHeight = status.chainHeight
                 print("🧭 Refresh target height set to \(targetHeight!) (restoreHeight=\(status.restoreHeight))")
+            }
+
+            // Continuously sample core error state (throttled) even if progress continues.
+            // If we detect a deterministic wallet2 decode failure, record an iOS-side lockout so
+            // subsequent refreshes can switch WALLETCORE_BULK_MODE to `range`.
+            let nowErr = Date()
+            if nowErr.timeIntervalSince(lastCoreErrSampleAt) >= coreErrSampleInterval {
+                lastCoreErrSampleAt = nowErr
+                if !wallet2LockoutRecordedThisRefresh,
+                   let coreErr = WalletCoreFFIClient.lastErrorMessage(),
+                   !coreErr.isEmpty,
+                   MoneroConfig.isDeterministicWallet2DecodeFailure(coreErr) {
+                    await MainActor.run {
+                        MoneroConfig.lockOutWallet2BulkForCurrentNode()
+                    }
+                    wallet2LockoutRecordedThisRefresh = true
+                    print("🧯 Recorded wallet2 bulk lockout from core error sampling during refresh; err=\(coreErr)")
+                }
             }
 
             // Track progress and detect stalls
@@ -257,6 +370,7 @@ actor WalletManager {
             let now = Date()
             if now.timeIntervalSince(lastPersistAt) >= persistInterval, status.lastScanned > 0 {
                 exportCacheAndPersist(for: walletId)
+                print("🗂️ Cache export reason: periodic walletId=\(walletId)")
                 lastPersistAt = now
             }
 
@@ -278,6 +392,15 @@ actor WalletManager {
             // Early abort if core reported an error and no progress for a short window
             if Date().timeIntervalSince(lastProgressAt) > 2.0 {
                 if let coreErr = WalletCoreFFIClient.lastErrorMessage(), !coreErr.isEmpty {
+                    // If this is a deterministic wallet2 `/getblocks.bin` decode failure, lock out wallet2 bulk
+                    // for this node so subsequent refreshes use `range` bulk mode instead of looping.
+                    if MoneroConfig.isDeterministicWallet2DecodeFailure(coreErr) {
+                        await MainActor.run {
+                            MoneroConfig.lockOutWallet2BulkForCurrentNode()
+                        }
+                        print("🧯 Recorded wallet2 bulk lockout due to deterministic decode failure; forcing fallback path. err=\(coreErr)")
+                    }
+
                     // Best-effort persistence before surfacing failure
                     exportCacheAndPersist(for: walletId)
                     throw WalletError.refreshFailed("Core error: \(coreErr)")
@@ -286,6 +409,14 @@ actor WalletManager {
 
             // Stall-based handling: on first stall, fallback to reliable sequential scan and continue
                                     if Date().timeIntervalSince(lastProgressAt) > dynamicStallTimeout {
+                                        #if DEBUG
+                                        if WALLET2_DEBUG_FORCE_ENABLED {
+                                            // In wallet2-debug mode, do not auto-restart or mutate tuning; it hides decode failures behind retries.
+                                            print("⛔️ DEBUG wallet2: stall detected (>\(Int(dynamicStallTimeout))s) but auto-fallback is disabled; returning control to UI.")
+                                            throw WalletError.refreshFailed("DEBUG wallet2: stall detected; auto-fallback disabled to preserve deterministic logs.")
+                                        }
+                                        #endif
+
                                         print("↩️ Stall detected (>\(Int(dynamicStallTimeout))s). Falling back to sequential scan (par=0, batch=150) and retrying…")
                                         await MoneroConfig.recordParallelStallForCurrentNode()
                                         await MoneroConfig.setScanParallelism(0)
@@ -293,7 +424,9 @@ actor WalletManager {
                                         refreshPar = 0
                                         refreshBatch = 150
                                         // Restart background refresh with safer tuning
-                                        try WalletCoreFFIClient.refreshWalletAsync(walletId: walletId, nodeURL: MoneroConfig.scanNodeURL())
+                                        let effectiveURL = MoneroConfig.scanNodeURL()
+                                        print("🌐 Stall fallback restart using nodeURL=\(effectiveURL)")
+                                        try WalletCoreFFIClient.refreshWalletAsync(walletId: walletId, nodeURL: effectiveURL)
                                         // Reset stall clock and give the sequential path time
                                         lastProgressAt = Date()
                                         lastPersistAt = Date.distantPast
@@ -343,8 +476,10 @@ actor WalletManager {
             throw WalletError.statusFailed("No wallet is currently open")
         }
 
+        // IMPORTANT: A snapshot is not a cancel and must not interfere with an active refresh.
         // Export whatever state the core currently has and persist it.
         exportCacheAndPersist(for: walletId)
+        print("🗂️ Cache export reason: snapshot walletId=\(walletId)")
     }
 
     /// Force rescan from a specific height. Resets core scan state, clears local cache, and refreshes.
@@ -471,6 +606,47 @@ actor WalletManager {
 
     /// Apply scan tuning (parallelism and batch) via environment variables
     private func applyScanTuning() {
+        #if DEBUG
+        if WALLET2_DEBUG_FORCE_ENABLED {
+            // Force deterministic settings for wallet2 fast-sync debugging.
+            // This removes UI/settings variability while iterating on `/getblocks.bin` decoding.
+            let par = max(1, min(WALLET2_DEBUG_FORCE_PAR, 64))
+            let batch = max(50, min(WALLET2_DEBUG_FORCE_BATCH, 5000))
+
+            refreshPar = par
+            refreshBatch = batch
+
+            setenv("WALLETCORE_SCAN_PAR", "\(par)", 1)
+            setenv("WALLETCORE_SCAN_BATCH", "\(batch)", 1)
+
+            // Force bulk fetch on, but respect iOS-side lockout by switching walletcore bulk mode to `range`.
+            // This prevents repeated wallet2 `/getblocks.bin` decode failures from causing retry/stall loops.
+            setenv("WALLETCORE_BULK_FETCH", "1", 1)
+
+            let lockedOut = MoneroConfig.isWallet2BulkLockedOutForCurrentNode()
+            let bulkMode = lockedOut ? "range" : "wallet2"
+            setenv("WALLETCORE_BULK_MODE", bulkMode, 1)
+
+            // Always keep bin debug on in DEBUG so logs are deterministic.
+            setenv("WALLETCORE_BULK_BIN_DEBUG", "1", 1)
+
+            let node = MoneroConfig.scanNodeURL()
+            let mode = MoneroConfig.scanMode
+            let envPar = getenv("WALLETCORE_SCAN_PAR").map { String(cString: $0) } ?? "(unset)"
+            let envBatch = getenv("WALLETCORE_SCAN_BATCH").map { String(cString: $0) } ?? "(unset)"
+            let envBulk = getenv("WALLETCORE_BULK_FETCH").map { String(cString: $0) } ?? "(unset)"
+            let envBulkMode = getenv("WALLETCORE_BULK_MODE").map { String(cString: $0) } ?? "(unset)"
+            let envBinDebug = getenv("WALLETCORE_BULK_BIN_DEBUG").map { String(cString: $0) } ?? "(unset)"
+
+            if lockedOut {
+                print("🧯 Wallet2 bulk lockout active for node=\(node); forcing WALLETCORE_BULK_MODE=range")
+            }
+
+            print("🧪 DEBUG wallet2 force: mode=\(mode) node=\(node) par=\(par) batch=\(batch) env{par=\(envPar) batch=\(envBatch) bulk=\(envBulk) bulk_mode=\(envBulkMode) bin_debug=\(envBinDebug)}")
+            return
+        }
+        #endif
+
         let tuning = MoneroConfig.chooseTuningForCurrentNode()
         let par = max(0, min(tuning.par, 64))
         let batch = max(50, min(tuning.batch, 5000))
@@ -486,8 +662,29 @@ actor WalletManager {
         }
 
         setenv("WALLETCORE_SCAN_BATCH", "\(batch)", 1)
-        print("🔧 Scan tuning applied: par=\(par) batch=\(batch)")
+
+        // Bulk .bin fetch toggle (experimental).
+        // When disabled, force the core to avoid *.bin bulk endpoints so we don't get stuck in a retry loop
+        // if a daemon returns incomplete `get_blocks.bin` responses (e.g., omitted tx blobs).
+        if MoneroConfig.bulkBinFetchEnabled {
+            setenv("WALLETCORE_BULK_FETCH", "1", 1)
+        } else {
+            setenv("WALLETCORE_BULK_FETCH", "0", 1)
+        }
+
+        // Log with context so we can tell *why* we ended up with certain values on app start.
+        // Also reflect the effective env var values (WALLETCORE_SCAN_PAR may be unset when par==0).
+        let node = MoneroConfig.scanNodeURL()
+        let mode = MoneroConfig.scanMode
+        let envPar = getenv("WALLETCORE_SCAN_PAR").map { String(cString: $0) } ?? "(unset)"
+        let envBatch = getenv("WALLETCORE_SCAN_BATCH").map { String(cString: $0) } ?? "(unset)"
+        let envBulk = getenv("WALLETCORE_BULK_FETCH").map { String(cString: $0) } ?? "(unset)"
+
+        print("🔧 Scan tuning applied: mode=\(mode) node=\(node) par=\(par) batch=\(batch) bulk_bin_fetch=\(MoneroConfig.bulkBinFetchEnabled) env{par=\(envPar) batch=\(envBatch) bulk=\(envBulk)}")
     }
+
+    // NOTE: Removed the reason-tagging wrapper to avoid recursive overload confusion.
+    // Call `exportCacheAndPersist(for:)` directly and print a reason at the call site instead.
 
     // Clear on-disk scan cache for current wallet (per network).
     // Removes per-network cache file and any legacy cache stored in UserDefaults.
