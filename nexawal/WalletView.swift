@@ -543,37 +543,17 @@ struct SettingsView: View {
     @ObservedObject var viewModel: WalletViewModel
     @State private var nodeAddress: String
     @State private var rescanHeightInput: String
-    @State private var useI2P: Bool
-    @State private var i2pRPCAddress: String
-    @State private var i2pProxyAddress: String
     @State private var gapLimitInput: String
     @State private var accountGapInput: String
-    @State private var scanModeIsAuto: Bool
-    @State private var networkPolicyIndex: Int
-    @State private var parInput: String
-    @State private var batchInput: String
     @Environment(\.dismiss) var dismiss
 
     init(viewModel: WalletViewModel) {
         self._viewModel = ObservedObject(initialValue: viewModel)
         self._nodeAddress = State(initialValue: MoneroConfig.daemonAddress)
-        self._useI2P = State(initialValue: MoneroConfig.useI2P)
-        self._i2pRPCAddress = State(initialValue: MoneroConfig.i2pRPCAddress)
-        self._i2pProxyAddress = State(initialValue: MoneroConfig.i2pHTTPProxyAddress ?? "192.168.4.137:4444")
         let heightValue = viewModel.restoreHeight
         self._rescanHeightInput = State(initialValue: heightValue == 0 ? "" : String(heightValue))
         self._gapLimitInput = State(initialValue: String(MoneroConfig.gapLimit))
         self._accountGapInput = State(initialValue: String(MoneroConfig.accountGap))
-        self._scanModeIsAuto = State(initialValue: MoneroConfig.scanMode == .auto)
-        let policyIndex: Int
-        switch MoneroConfig.networkPolicy {
-        case .clearnet: policyIndex = 0
-        case .i2p: policyIndex = 1
-        case .hybrid: policyIndex = 2
-        }
-        self._networkPolicyIndex = State(initialValue: policyIndex)
-        self._parInput = State(initialValue: String(MoneroConfig.scanParallelism))
-        self._batchInput = State(initialValue: String(MoneroConfig.scanBatchSize))
     }
 
     private var isRescanInProgress: Bool {
@@ -584,101 +564,47 @@ struct SettingsView: View {
         NavigationView {
             Form {
                 Section(header: Text("Network & Node")) {
-                    Picker("Network Policy", selection: $networkPolicyIndex) {
-                        Text("Clearnet only").tag(0)
-                        Text("I2P only").tag(1)
-                        Text("Scan clearnet, broadcast I2P").tag(2)
-                    }
-                    .pickerStyle(.segmented)
+                    TextField("Daemon hostname:port", text: $nodeAddress)
+                        .font(.system(.body, design: .monospaced))
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    Text("Example: mini.nexatrode.com:18089\n(Full URL will be: http://mini.nexatrode.com:18089)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
 
-                    Group {
-                        let scanDesc = (networkPolicyIndex == 1) ? "I2P" : "clearnet"
-                        let broadcastDesc = (networkPolicyIndex == 0) ? "clearnet" : "I2P"
-                        Text("Scanning over \(scanDesc); broadcasting over \(broadcastDesc).")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+                Section(header: Text("Restore & Gaps")) {
+                    TextField("Restore height (optional)", text: $rescanHeightInput)
+                        .keyboardType(.numberPad)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    TextField("Gap limit (1-100000)", text: $gapLimitInput)
+                        .keyboardType(.numberPad)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    Text("Controls how many subaddresses are scanned")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    TextField("Account lookahead (1-1000)", text: $accountGapInput)
+                        .keyboardType(.numberPad)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    Text("Number of accounts to scan starting at account 0")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
 
-                    if networkPolicyIndex == 0 || networkPolicyIndex == 2 {
-                        TextField("Clearnet hostname:port", text: $nodeAddress)
-                            .font(.system(.body, design: .monospaced))
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        Text("Example: 192.168.4.137:18081\n(Full URL will be: http://192.168.4.137:18081)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    if networkPolicyIndex == 1 || networkPolicyIndex == 2 {
-                        TextField("I2P RPC (.b32.i2p:port)", text: $i2pRPCAddress)
-                            .font(.system(.body, design: .monospaced))
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        Text("Example: cvxtgqj...b32.i2p:18089")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        TextField("I2P HTTP proxy (host:port)", text: $i2pProxyAddress)
-                            .font(.system(.body, design: .monospaced))
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        Text("Example: 192.168.4.137:4444")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Section(header: Text("Scanning")) {
-                        Toggle("Scan Mode: Auto", isOn: $scanModeIsAuto)
-
-                        Toggle("Bulk .bin fetch (experimental)", isOn: Binding(
-                            get: { MoneroConfig.bulkBinFetchEnabled },
-                            set: { MoneroConfig.setBulkBinFetchEnabled($0) }
-                        ))
-                        Text("Uses monerod binary bulk endpoints for faster syncing on supported nodes. Disable if you see stalls or incomplete responses.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        TextField("Gap limit (1-100000)", text: $gapLimitInput)
-                            .keyboardType(.numberPad)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        Text("Controls how many subaddresses are scanned")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        TextField("Account lookahead (accounts, ≥1)", text: $accountGapInput)
-                            .keyboardType(.numberPad)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        Text("Number of accounts to scan starting at account 0 (advanced)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        Button(role: .destructive) {
-                            Task {
-                                do {
-                                    try await WalletManager.shared.clearScanCache()
-                                } catch {
-                                    print("⚠️ Clear cache failed: \(error)")
-                                }
+                Section(header: Text("Maintenance")) {
+                    Button(role: .destructive) {
+                        Task {
+                            do {
+                                try await WalletManager.shared.clearScanCache()
+                            } catch {
+                                print("⚠️ Clear cache failed: \(error)")
                             }
-                        } label: {
-                            Text("Clear scan cache (this network)")
                         }
-                    }
-                    if !scanModeIsAuto {
-                        Section(header: Text("Advanced Scan Tuning")) {
-                            TextField("Parallel workers (0-64)", text: $parInput)
-                                .keyboardType(.numberPad)
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
-                            TextField("Batch size (50-5000)", text: $batchInput)
-                                .keyboardType(.numberPad)
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
-                            Text("Increase speed on catch-up. Start with 6 workers and 600 batch. 0 workers disables parallelism.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
+                    } label: {
+                        Text("Clear scan cache (this network)")
                     }
                 }
 
@@ -709,23 +635,7 @@ struct SettingsView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        switch networkPolicyIndex {
-                        case 0: // Clearnet only
-                            MoneroConfig.setNetworkPolicy(.clearnet)
-                            MoneroConfig.setDaemonAddress(nodeAddress)
-                            MoneroConfig.setI2PHTTPProxyAddress(nil)
-                        case 1: // I2P only
-                            MoneroConfig.setNetworkPolicy(.i2p)
-                            MoneroConfig.setI2PRPCAddress(i2pRPCAddress)
-                            MoneroConfig.setI2PHTTPProxyAddress(i2pProxyAddress)
-                        case 2: // Hybrid (scan clearnet, broadcast I2P)
-                            MoneroConfig.setNetworkPolicy(.hybrid)
-                            MoneroConfig.setDaemonAddress(nodeAddress)
-                            MoneroConfig.setI2PRPCAddress(i2pRPCAddress)
-                            MoneroConfig.setI2PHTTPProxyAddress(i2pProxyAddress)
-                        default:
-                            break
-                        }
+                        MoneroConfig.setDaemonAddress(nodeAddress)
                         if let gap = parsedGapLimit() {
                             MoneroConfig.setGapLimit(gap)
                             Task {
@@ -738,18 +648,7 @@ struct SettingsView: View {
                             let clamped = max(1, min(acc, 1000))
                             MoneroConfig.setAccountGap(clamped)
                         }
-                        // Scan mode and tuning
-                        MoneroConfig.setScanMode(scanModeIsAuto ? .auto : .manual)
-                        if !scanModeIsAuto {
-                            if let p = Int(parInput) {
-                                let clamped = max(0, min(p, 64))
-                                MoneroConfig.setScanParallelism(clamped)
-                            }
-                            if let b = Int(batchInput) {
-                                let clamped = max(50, min(b, 5000))
-                                MoneroConfig.setScanBatchSize(clamped)
-                            }
-                        }
+
                         dismiss()
                     }
                 }

@@ -7,13 +7,7 @@
 
 import Foundation
 
-#if DEBUG
-// Debug-only: force deterministic wallet2 bulk sync settings so UI toggles don't affect decoding work.
-// This is intentionally scoped to DEBUG builds to keep production behavior unchanged.
-private let WALLET2_DEBUG_FORCE_ENABLED = true
-private let WALLET2_DEBUG_FORCE_PAR = 8
-private let WALLET2_DEBUG_FORCE_BATCH = 200
-#endif
+
 import MoneroWalletCoreFFI
 
 enum WalletError: LocalizedError {
@@ -171,18 +165,12 @@ actor WalletManager {
                 }
                 print("⚠️ Refresh with nodeURL '\(nodeURL)' failed: \(nodeError.localizedDescription)")
 
-                // Record wallet2 bulk lockout immediately on deterministic `/getblocks.bin` decode failures.
-                // Rationale: relying only on the polling-loop `lastErrorMessage()` path can miss fast-fail decode errors,
-                // which then leads to repeated stall/retry loops and unwanted tuning changes.
                 let coreLastErr = WalletCoreFFIClient.lastErrorMessage() ?? ""
                 let combinedErr = ([nodeError.localizedDescription, coreLastErr])
                     .filter { !$0.isEmpty }
                     .joined(separator: "\n")
-                if MoneroConfig.isDeterministicWallet2DecodeFailure(combinedErr) {
-                    await MainActor.run {
-                        MoneroConfig.lockOutWallet2BulkForCurrentNode()
-                    }
-                    print("🧯 Recorded wallet2 bulk lockout from refresh failure; err=\(combinedErr)")
+                if !combinedErr.isEmpty {
+                    print("⚠️ Refresh error detail: \(combinedErr)")
                 }
                 // If core reports a parallel stall/channel error, auto-fallback to sequential scan on the same node first
                 if isParallelWorkerStall(nodeError.localizedDescription) {
@@ -311,7 +299,7 @@ actor WalletManager {
         // (so lastScanned continues advancing), which means a "no progress" gate can miss the error.
         var lastCoreErrSampleAt = Date.distantPast
         let coreErrSampleInterval: TimeInterval = 1.0
-        var wallet2LockoutRecordedThisRefresh = false
+
 
         // Scale stall timeout based on scan tuning
         let par = refreshPar
@@ -345,15 +333,8 @@ actor WalletManager {
             let nowErr = Date()
             if nowErr.timeIntervalSince(lastCoreErrSampleAt) >= coreErrSampleInterval {
                 lastCoreErrSampleAt = nowErr
-                if !wallet2LockoutRecordedThisRefresh,
-                   let coreErr = WalletCoreFFIClient.lastErrorMessage(),
-                   !coreErr.isEmpty,
-                   MoneroConfig.isDeterministicWallet2DecodeFailure(coreErr) {
-                    await MainActor.run {
-                        MoneroConfig.lockOutWallet2BulkForCurrentNode()
-                    }
-                    wallet2LockoutRecordedThisRefresh = true
-                    print("🧯 Recorded wallet2 bulk lockout from core error sampling during refresh; err=\(coreErr)")
+                if let coreErr = WalletCoreFFIClient.lastErrorMessage(), !coreErr.isEmpty {
+                    print("⚠️ Core error sample during refresh: \(coreErr)")
                 }
             }
 
@@ -395,10 +376,8 @@ actor WalletManager {
                     // If this is a deterministic wallet2 `/getblocks.bin` decode failure, lock out wallet2 bulk
                     // for this node so subsequent refreshes use `range` bulk mode instead of looping.
                     if MoneroConfig.isDeterministicWallet2DecodeFailure(coreErr) {
-                        await MainActor.run {
-                            MoneroConfig.lockOutWallet2BulkForCurrentNode()
-                        }
-                        print("🧯 Recorded wallet2 bulk lockout due to deterministic decode failure; forcing fallback path. err=\(coreErr)")
+                        // wallet2 bulk lockout disabled (hardwired fast-sync mode); log only
+                        print("🧯 Detected deterministic wallet2 decode failure (no lockout applied); consider manual fallback. err=\(coreErr)")
                     }
 
                     // Best-effort persistence before surfacing failure
@@ -408,31 +387,22 @@ actor WalletManager {
             }
 
             // Stall-based handling: on first stall, fallback to reliable sequential scan and continue
-                                    if Date().timeIntervalSince(lastProgressAt) > dynamicStallTimeout {
-                                        #if DEBUG
-                                        if WALLET2_DEBUG_FORCE_ENABLED {
-                                            // In wallet2-debug mode, do not auto-restart or mutate tuning; it hides decode failures behind retries.
-                                            print("⛔️ DEBUG wallet2: stall detected (>\(Int(dynamicStallTimeout))s) but auto-fallback is disabled; returning control to UI.")
-                                            throw WalletError.refreshFailed("DEBUG wallet2: stall detected; auto-fallback disabled to preserve deterministic logs.")
-                                        }
-                                        #endif
-
-                                        print("↩️ Stall detected (>\(Int(dynamicStallTimeout))s). Falling back to sequential scan (par=0, batch=150) and retrying…")
-                                        await MoneroConfig.recordParallelStallForCurrentNode()
-                                        await MoneroConfig.setScanParallelism(0)
-                                        await MoneroConfig.setScanBatchSize(150)
-                                        refreshPar = 0
-                                        refreshBatch = 150
-                                        // Restart background refresh with safer tuning
-                                        let effectiveURL = MoneroConfig.scanNodeURL()
-                                        print("🌐 Stall fallback restart using nodeURL=\(effectiveURL)")
-                                        try WalletCoreFFIClient.refreshWalletAsync(walletId: walletId, nodeURL: effectiveURL)
-                                        // Reset stall clock and give the sequential path time
-                                        lastProgressAt = Date()
-                                        lastPersistAt = Date.distantPast
-                                        dynamicStallTimeout = max(60.0, dynamicStallTimeout)
-                                        continue
-                                    }
+            if Date().timeIntervalSince(lastProgressAt) > dynamicStallTimeout {
+                print("↩️ Stall detected (>\(Int(dynamicStallTimeout))s). Falling back to sequential scan (par=0, batch=150) and retrying…")
+                refreshPar = 0
+                refreshBatch = 150
+                await MoneroConfig.setScanParallelism(0)
+                await MoneroConfig.setScanBatchSize(150)
+                // Restart background refresh with safer tuning
+                let effectiveURL = MoneroConfig.scanNodeURL()
+                print("🌐 Stall fallback restart using nodeURL=\(effectiveURL)")
+                try WalletCoreFFIClient.refreshWalletAsync(walletId: walletId, nodeURL: effectiveURL)
+                // Reset stall clock and give the sequential path time
+                lastProgressAt = Date()
+                lastPersistAt = Date.distantPast
+                dynamicStallTimeout = max(60.0, dynamicStallTimeout)
+                continue
+            }
 
             let interval = max(pollInterval, 0.05)
             let nanoseconds = UInt64(interval * 1_000_000_000)
@@ -606,81 +576,21 @@ actor WalletManager {
 
     /// Apply scan tuning (parallelism and batch) via environment variables
     private func applyScanTuning() {
-        #if DEBUG
-        if WALLET2_DEBUG_FORCE_ENABLED {
-            // Force deterministic settings for wallet2 fast-sync debugging.
-            // This removes UI/settings variability while iterating on `/getblocks.bin` decoding.
-            let par = max(1, min(WALLET2_DEBUG_FORCE_PAR, 64))
-            let batch = max(50, min(WALLET2_DEBUG_FORCE_BATCH, 5000))
+        // Feather-like baseline: let core defaults drive bulk/par/batch; keep scan logging on.
+        refreshPar = 0
+        refreshBatch = 0
 
-            refreshPar = par
-            refreshBatch = batch
+        unsetenv("WALLETCORE_SCAN_PAR")
+        unsetenv("WALLETCORE_SCAN_BATCH")
+        unsetenv("WALLETCORE_BULK_FETCH")
+        unsetenv("WALLETCORE_BULK_MODE")
+        unsetenv("WALLETCORE_BULK_FETCH_BATCH")
+        unsetenv("WALLETCORE_WALLET2_FAST_FALLBACK")
+        unsetenv("WALLETCORE_BULK_BIN_DEBUG")
+        setenv("WALLETCORE_SCAN_LOG", "1", 1)
 
-            setenv("WALLETCORE_SCAN_PAR", "\(par)", 1)
-            setenv("WALLETCORE_SCAN_BATCH", "\(batch)", 1)
-
-            // Force bulk fetch on, but respect iOS-side lockout by switching walletcore bulk mode to `range`.
-            // This prevents repeated wallet2 `/getblocks.bin` decode failures from causing retry/stall loops.
-            setenv("WALLETCORE_BULK_FETCH", "1", 1)
-
-            let lockedOut = MoneroConfig.isWallet2BulkLockedOutForCurrentNode()
-            let bulkMode = lockedOut ? "range" : "wallet2"
-            setenv("WALLETCORE_BULK_MODE", bulkMode, 1)
-
-            // Always keep bin debug on in DEBUG so logs are deterministic.
-            setenv("WALLETCORE_BULK_BIN_DEBUG", "1", 1)
-
-            let node = MoneroConfig.scanNodeURL()
-            let mode = MoneroConfig.scanMode
-            let envPar = getenv("WALLETCORE_SCAN_PAR").map { String(cString: $0) } ?? "(unset)"
-            let envBatch = getenv("WALLETCORE_SCAN_BATCH").map { String(cString: $0) } ?? "(unset)"
-            let envBulk = getenv("WALLETCORE_BULK_FETCH").map { String(cString: $0) } ?? "(unset)"
-            let envBulkMode = getenv("WALLETCORE_BULK_MODE").map { String(cString: $0) } ?? "(unset)"
-            let envBinDebug = getenv("WALLETCORE_BULK_BIN_DEBUG").map { String(cString: $0) } ?? "(unset)"
-
-            if lockedOut {
-                print("🧯 Wallet2 bulk lockout active for node=\(node); forcing WALLETCORE_BULK_MODE=range")
-            }
-
-            print("🧪 DEBUG wallet2 force: mode=\(mode) node=\(node) par=\(par) batch=\(batch) env{par=\(envPar) batch=\(envBatch) bulk=\(envBulk) bulk_mode=\(envBulkMode) bin_debug=\(envBinDebug)}")
-            return
-        }
-        #endif
-
-        let tuning = MoneroConfig.chooseTuningForCurrentNode()
-        let par = max(0, min(tuning.par, 64))
-        let batch = max(50, min(tuning.batch, 5000))
-
-        // Persist chosen tuning for this refresh so logs and stall logic are consistent
-        refreshPar = par
-        refreshBatch = batch
-
-        if par > 0 {
-            setenv("WALLETCORE_SCAN_PAR", "\(par)", 1)
-        } else {
-            unsetenv("WALLETCORE_SCAN_PAR")
-        }
-
-        setenv("WALLETCORE_SCAN_BATCH", "\(batch)", 1)
-
-        // Bulk .bin fetch toggle (experimental).
-        // When disabled, force the core to avoid *.bin bulk endpoints so we don't get stuck in a retry loop
-        // if a daemon returns incomplete `get_blocks.bin` responses (e.g., omitted tx blobs).
-        if MoneroConfig.bulkBinFetchEnabled {
-            setenv("WALLETCORE_BULK_FETCH", "1", 1)
-        } else {
-            setenv("WALLETCORE_BULK_FETCH", "0", 1)
-        }
-
-        // Log with context so we can tell *why* we ended up with certain values on app start.
-        // Also reflect the effective env var values (WALLETCORE_SCAN_PAR may be unset when par==0).
         let node = MoneroConfig.scanNodeURL()
-        let mode = MoneroConfig.scanMode
-        let envPar = getenv("WALLETCORE_SCAN_PAR").map { String(cString: $0) } ?? "(unset)"
-        let envBatch = getenv("WALLETCORE_SCAN_BATCH").map { String(cString: $0) } ?? "(unset)"
-        let envBulk = getenv("WALLETCORE_BULK_FETCH").map { String(cString: $0) } ?? "(unset)"
-
-        print("🔧 Scan tuning applied: mode=\(mode) node=\(node) par=\(par) batch=\(batch) bulk_bin_fetch=\(MoneroConfig.bulkBinFetchEnabled) env{par=\(envPar) batch=\(envBatch) bulk=\(envBulk)}")
+        print("🧪 scan tuning feather-baseline: node=\(node) scan_log=1 (env bulk/par/batch unset)")
     }
 
     // NOTE: Removed the reason-tagging wrapper to avoid recursive overload confusion.

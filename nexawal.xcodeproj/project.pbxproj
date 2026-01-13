@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		AA9B72BA2EE2B7F5005F95F0 /* MoneroWalletCoreFFI in Frameworks */ = {isa = PBXBuildFile; productRef = AA9B72B92EE2B7F5005F95F0 /* MoneroWalletCoreFFI */; };
+		AAC2C8C42F0E21BC0080C162 /* MoneroWalletCoreFFI in Frameworks */ = {isa = PBXBuildFile; productRef = AAC2C8C32F0E21BC0080C162 /* MoneroWalletCoreFFI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,7 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AA9B72BA2EE2B7F5005F95F0 /* MoneroWalletCoreFFI in Frameworks */,
+				AAC2C8C42F0E21BC0080C162 /* MoneroWalletCoreFFI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -70,7 +70,7 @@
 			);
 			name = nexawal;
 			packageProductDependencies = (
-				AA9B72B92EE2B7F5005F95F0 /* MoneroWalletCoreFFI */,
+				AAC2C8C32F0E21BC0080C162 /* MoneroWalletCoreFFI */,
 			);
 			productName = nexawal;
 			productReference = AAABE44E2EDEBF11004D56AB /* nexawal.app */;
@@ -101,7 +101,7 @@
 			mainGroup = AAABE4452EDEBF11004D56AB;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				AA9B72B82EE2B7F5005F95F0 /* XCRemoteSwiftPackageReference "MoneroWalletCoreFFI" */,
+				AAC2C8C22F0E21BC0080C162 /* XCLocalSwiftPackageReference "../MoneroWalletCoreFFI" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AAABE44F2EDEBF11004D56AB /* Products */;
@@ -338,21 +338,16 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		AA9B72B82EE2B7F5005F95F0 /* XCRemoteSwiftPackageReference "MoneroWalletCoreFFI" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/cacaosteve/MoneroWalletCoreFFI";
-			requirement = {
-				branch = main;
-				kind = branch;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		AAC2C8C22F0E21BC0080C162 /* XCLocalSwiftPackageReference "../MoneroWalletCoreFFI" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../MoneroWalletCoreFFI;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		AA9B72B92EE2B7F5005F95F0 /* MoneroWalletCoreFFI */ = {
+		AAC2C8C32F0E21BC0080C162 /* MoneroWalletCoreFFI */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = AA9B72B82EE2B7F5005F95F0 /* XCRemoteSwiftPackageReference "MoneroWalletCoreFFI" */;
 			productName = MoneroWalletCoreFFI;
 		};
 /* End XCSwiftPackageProductDependency section */
