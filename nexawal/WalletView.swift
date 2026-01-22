@@ -568,7 +568,7 @@ struct SettingsView: View {
                         .font(.system(.body, design: .monospaced))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                    Text("Example: mini.nexatrode.com:18089\n(Full URL will be: http://mini.nexatrode.com:18089)")
+                    Text("Example: 192.168.4.137:18081\n(Full URL will be: http://192.168.4.137::18081)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

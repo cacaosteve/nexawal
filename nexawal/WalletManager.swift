@@ -493,8 +493,27 @@ actor WalletManager {
         let fileURL = cacheFileURL(for: walletId)
         do {
             let data = try Data(contentsOf: fileURL)
-            try WalletCoreFFIClient.importCache(walletId: walletId, cacheBlob: data)
-            print("🗂️ Imported wallet cache (\(data.count) bytes) for \(walletId) from file")
+            do {
+                try WalletCoreFFIClient.importCache(walletId: walletId, cacheBlob: data)
+                print("🗂️ Imported wallet cache (\(data.count) bytes) for \(walletId) from file")
+            } catch {
+                // If the core rejects the cache as incompatible, delete it and force a clean rebuild.
+                // This prevents "key_image_mismatch quarantine spiral" after internal derivation changes.
+                let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
+                if coreMsg.lowercased().contains("incompatible cache version") {
+                    print("🧹 Cache incompatible for \(walletId); deleting cache file and resetting tracked outputs. core_err=\(coreMsg)")
+                    do {
+                        try clearScanCache()
+                    } catch {
+                        print("⚠️ Failed to clear incompatible cache file for \(walletId): \(error.localizedDescription)")
+                    }
+                    // Best-effort: reset in-memory tracked outputs/quarantine in the core as well.
+                    // (If the function isn't available in this build, ignore; refresh will rebuild anyway.)
+                    try? WalletCoreFFIClient.resetTrackedOutputs(walletId: walletId)
+                    return
+                }
+                print("⚠️ Cache import (file) rejected for \(walletId): \(error.localizedDescription) core_err=\(coreMsg)")
+            }
         } catch {
             // File may not exist on first run; ignore not found, log others
             if (error as NSError).domain != NSCocoaErrorDomain || (error as NSError).code != NSFileReadNoSuchFileError {
@@ -642,12 +661,19 @@ actor WalletManager {
         }
 
         let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
-        let fee = try WalletCoreFFIClient.previewFee(
-            walletId: walletId,
-            destinations: [dest],
-            ringLen: ringLen,
-            nodeURL: endpoint
-        )
+        let fee: UInt64
+        do {
+            fee = try WalletCoreFFIClient.previewFee(
+                walletId: walletId,
+                destinations: [dest],
+                ringLen: ringLen,
+                nodeURL: endpoint
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+            print("❌ Preview fee failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+            throw error
+        }
 
         let feeXMR = Double(fee) / 1_000_000_000_000.0
         print("📦 Estimated fee: \(fee) piconero (\(String(format: "%.12f", feeXMR)) XMR)")
@@ -674,13 +700,20 @@ actor WalletManager {
         print("🔎 Preview (subaddr \(fromSubaddressMinor)) start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
 
         let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
-        let fee = try WalletCoreFFIClient.previewFeeWithFilter(
-            walletId: walletId,
-            destinations: [dest],
-            filter: filterForSubaddressMinor(fromSubaddressMinor),
-            ringLen: ringLen,
-            nodeURL: endpoint
-        )
+        let fee: UInt64
+        do {
+            fee = try WalletCoreFFIClient.previewFeeWithFilter(
+                walletId: walletId,
+                destinations: [dest],
+                filter: filterForSubaddressMinor(fromSubaddressMinor),
+                ringLen: ringLen,
+                nodeURL: endpoint
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+            print("❌ Preview fee (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+            throw error
+        }
 
         let feeXMR = Double(fee) / 1_000_000_000_000.0
         print("📦 Estimated fee (subaddr \(fromSubaddressMinor)): \(fee) piconero (\(String(format: "%.12f", feeXMR)) XMR)")
@@ -700,14 +733,20 @@ actor WalletManager {
         applyBroadcastProxy()
 
         let endpoint = MoneroConfig.broadcastNodeURL()
-        let res = try WalletCoreFFIClient.previewSweepWithFilter(
-            walletId: walletId,
-            toAddress: toAddress,
-            filter: filterForSubaddressMinor(fromSubaddressMinor),
-            ringLen: ringLen,
-            nodeURL: endpoint
-        )
-        return res
+        do {
+            let res = try WalletCoreFFIClient.previewSweepWithFilter(
+                walletId: walletId,
+                toAddress: toAddress,
+                filter: filterForSubaddressMinor(fromSubaddressMinor),
+                ringLen: ringLen,
+                nodeURL: endpoint
+            )
+            return res
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+            print("❌ Sweep preview (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+            throw error
+        }
     }
 
     /// Sweep ("Send Max") constrained to a subaddress (account 0, minor).
@@ -722,13 +761,19 @@ actor WalletManager {
         applyBroadcastProxy()
 
         let endpoint = MoneroConfig.broadcastNodeURL()
-        return try WalletCoreFFIClient.sweepWithFilter(
-            walletId: walletId,
-            toAddress: toAddress,
-            filter: filterForSubaddressMinor(fromSubaddressMinor),
-            ringLen: ringLen,
-            nodeURL: endpoint
-        )
+        do {
+            return try WalletCoreFFIClient.sweepWithFilter(
+                walletId: walletId,
+                toAddress: toAddress,
+                filter: filterForSubaddressMinor(fromSubaddressMinor),
+                ringLen: ringLen,
+                nodeURL: endpoint
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+            print("❌ Sweep (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+            throw error
+        }
     }
 
     /// Send exact amount constrained to a subaddress (account 0, minor). Fee is added on top (normal behavior).
@@ -745,13 +790,19 @@ actor WalletManager {
 
         let endpoint = MoneroConfig.broadcastNodeURL()
         let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
-        return try WalletCoreFFIClient.sendWithFilter(
-            walletId: walletId,
-            destinations: [dest],
-            filter: filterForSubaddressMinor(fromSubaddressMinor),
-            ringLen: ringLen,
-            nodeURL: endpoint
-        )
+        do {
+            return try WalletCoreFFIClient.sendWithFilter(
+                walletId: walletId,
+                destinations: [dest],
+                filter: filterForSubaddressMinor(fromSubaddressMinor),
+                ringLen: ringLen,
+                nodeURL: endpoint
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+            print("❌ Send (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+            throw error
+        }
     }
 
     /// Preview sweep ("Send Max") to a destination.
@@ -773,12 +824,19 @@ actor WalletManager {
             print("🔎 Sweep preview start: ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
         }
 
-        let res = try WalletCoreFFIClient.previewSweep(
-            walletId: walletId,
-            toAddress: toAddress,
-            ringLen: ringLen,
-            nodeURL: endpoint
-        )
+        let res: (amount: UInt64, fee: UInt64)
+        do {
+            res = try WalletCoreFFIClient.previewSweep(
+                walletId: walletId,
+                toAddress: toAddress,
+                ringLen: ringLen,
+                nodeURL: endpoint
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+            print("❌ Sweep preview failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+            throw error
+        }
 
         let amountXMR = Double(res.amount) / 1_000_000_000_000.0
         let feeXMR = Double(res.fee) / 1_000_000_000_000.0
@@ -805,16 +863,27 @@ actor WalletManager {
             print("📤 Sweep start: ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
         }
 
-        let res = try WalletCoreFFIClient.sweep(
-            walletId: walletId,
-            toAddress: toAddress,
-            ringLen: ringLen,
-            nodeURL: endpoint
-        )
+        let res: (txid: String, amount: UInt64, fee: UInt64)
+        do {
+            res = try WalletCoreFFIClient.sweep(
+                walletId: walletId,
+                toAddress: toAddress,
+                ringLen: ringLen,
+                nodeURL: endpoint
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+            print("❌ Sweep failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+            throw error
+        }
 
         let amountXMR = Double(res.amount) / 1_000_000_000_000.0
         let feeXMR = Double(res.fee) / 1_000_000_000_000.0
         print("✅ Swept txid=\(res.txid), amount=\(res.amount) piconero (\(String(format: "%.12f", amountXMR)) XMR), fee=\(res.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR) via \(policy) endpoint \(endpoint)")
+
+        // Persist immediately so pending-outgoing survives app restart/rebuild before next refresh.
+        exportCacheAndPersist(for: walletId)
+        print("🗂️ Cache export reason: sweep walletId=\(walletId)")
 
         return res
     }
@@ -839,16 +908,27 @@ actor WalletManager {
             print("📤 Send start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
         }
 
-        let result = try WalletCoreFFIClient.send(
-            walletId: walletId,
-            toAddress: toAddress,
-            amountPiconero: amountPiconero,
-            ringLen: ringLen,
-            nodeURL: endpoint
-        )
+        let result: (txid: String, fee: UInt64)
+        do {
+            result = try WalletCoreFFIClient.send(
+                walletId: walletId,
+                toAddress: toAddress,
+                amountPiconero: amountPiconero,
+                ringLen: ringLen,
+                nodeURL: endpoint
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+            print("❌ Send failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+            throw error
+        }
 
         let feeXMR = Double(result.fee) / 1_000_000_000_000.0
         print("✅ Sent txid=\(result.txid), fee=\(result.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR) via \(policy) endpoint \(endpoint)")
+
+        // Persist immediately so pending-outgoing survives app restart/rebuild before next refresh.
+        exportCacheAndPersist(for: walletId)
+        print("🗂️ Cache export reason: send walletId=\(walletId)")
 
         return result
     }

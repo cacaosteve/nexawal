@@ -53,6 +53,38 @@
             ReferencedContainer = "container:nexawal.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
+      <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "WALLETCORE_FEE_PRIORITY"
+            value = "low"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "WALLETCORE_SWEEP_MIN_INPUT_PICONERO"
+            value = "50000000"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "WALLETCORE_DEBUG_INPUT_DUMP"
+            value = "1"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "WALLETCORE_DEBUG_SPEND_DETECT"
+            value = "1"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "WALLETCORE_DECOY_MODE"
+            value = "bin16"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "WALLETCORE_DECOY_PROBE"
+            value = "1"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"

@@ -201,6 +201,8 @@ struct SendView: View {
                 }
 
                 Section {
+                    // Keep Preview Fee and Send in the same row, but move Send Max out of the row to
+                    // reduce accidental taps from scrolling/overlapping hit targets.
                     HStack(spacing: 12) {
                         Button {
                             Task { await estimateFee() }
@@ -213,18 +215,11 @@ struct SendView: View {
                                 }
                                 Text(isEstimating ? "Estimating..." : "Preview Fee")
                             }
+                            .frame(maxWidth: .infinity)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.bordered)
                         .disabled(isEstimating || isSending || parsedAmountPiconero() == nil || !looksLikeAddress(toAddress))
-
-                        Button {
-                            Task { await sendMax() }
-                        } label: {
-                            HStack {
-                                Image(systemName: "arrow.up.circle")
-                                Text("Send Max")
-                            }
-                        }
-                        .disabled(isEstimating || isSending)
 
                         Button {
                             Task { await performSend() }
@@ -237,9 +232,25 @@ struct SendView: View {
                                 }
                                 Text(isSending ? "Sending..." : "Send")
                             }
+                            .frame(maxWidth: .infinity)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.borderedProminent)
                         .disabled(isEstimating || isSending || !canSend())
                     }
+
+                    Button {
+                        Task { await sendMax() }
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.up.circle")
+                            Text("Send Max")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isEstimating || isSending)
                 }
             }
             .navigationTitle("Send XMR")
@@ -271,51 +282,92 @@ struct SendView: View {
         }
     }
 
+    // MARK: - In-flight task cancellation / debouncing
+    //
+    // These are critical to avoid runaway repeated RPC calls when the user taps actions repeatedly
+    // or when SwiftUI triggers state updates while an async operation is still running.
+    @State private var feePreviewTask: Task<Void, Never>?
+    @State private var sweepPreviewTask: Task<Void, Never>?
+
     // MARK: - Actions
 
     private func estimateFee() async {
-        guard let amountPico = parsedAmountPiconero(),
-              let ring = parsedRingLen(),
-              looksLikeAddress(toAddress) else {
-            errorMessage = "Enter a valid address and amount."
-            previewReady = false
-            return
-        }
-        errorMessage = nil
-        infoMessage = nil
-        isEstimating = true
-        estimatedFeePiconero = nil
-        previewReady = false
+        print("🧭 UI action: estimateFee tapped wallet_id=\(walletManager.getCurrentWalletId() ?? "(none)") isMaxMode=\(isMaxMode) sendFromSubaddressEnabled=\(sendFromSubaddressEnabled) fromSubaddressMinor=\(fromSubaddressMinor) amountXMR=\(amountXMR) toAddress_prefix=\(String(toAddress.prefix(12)))")
 
-        // If the user is previewing a specific amount, we are not in "Send Max" (sweep) mode.
-        isMaxMode = false
+        // Cancel any previous fee preview and start a new one.
+        feePreviewTask?.cancel()
 
-        do {
-            let fee: UInt64
-            if sendFromSubaddressEnabled {
-                fee = try await walletManager.previewFee(
-                    fromSubaddressMinor: fromSubaddressMinor,
-                    toAddress: toAddress,
-                    amountPiconero: amountPico,
-                    ringLen: ring
-                )
-                infoMessage = "Fee estimated (inputs constrained to selected subaddress)."
-            } else {
-                fee = try await walletManager.previewFee(toAddress: toAddress, amountPiconero: amountPico, ringLen: ring)
-                infoMessage = "Fee estimated using broadcast policy."
+        feePreviewTask = Task {
+            // Small debounce to coalesce rapid taps / state changes.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if Task.isCancelled { return }
+
+            guard let amountPico = parsedAmountPiconero(),
+                  let ring = parsedRingLen(),
+                  looksLikeAddress(toAddress) else {
+                await MainActor.run {
+                    errorMessage = "Enter a valid address and amount."
+                    previewReady = false
+                }
+                return
             }
 
-            estimatedFeePiconero = fee
-            previewReady = true
-        } catch {
-            previewReady = false
-            errorMessage = "Fee preview failed: \(error.localizedDescription)"
+            await MainActor.run {
+                errorMessage = nil
+                infoMessage = nil
+                isEstimating = true
+                estimatedFeePiconero = nil
+                previewReady = false
+                // If the user is previewing a specific amount, we are not in "Send Max" (sweep) mode.
+                isMaxMode = false
+            }
+
+            do {
+                let fee: UInt64
+                if sendFromSubaddressEnabled {
+                    fee = try await walletManager.previewFee(
+                        fromSubaddressMinor: fromSubaddressMinor,
+                        toAddress: toAddress,
+                        amountPiconero: amountPico,
+                        ringLen: ring
+                    )
+                    if Task.isCancelled { return }
+                    await MainActor.run {
+                        infoMessage = "Fee estimated (inputs constrained to selected subaddress)."
+                    }
+                } else {
+                    fee = try await walletManager.previewFee(toAddress: toAddress, amountPiconero: amountPico, ringLen: ring)
+                    if Task.isCancelled { return }
+                    await MainActor.run {
+                        infoMessage = "Fee estimated using broadcast policy."
+                    }
+                }
+
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    estimatedFeePiconero = fee
+                    previewReady = true
+                }
+            } catch {
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    previewReady = false
+                    errorMessage = "Fee preview failed: \(error.localizedDescription)"
+                }
+            }
+
+            await MainActor.run {
+                isEstimating = false
+            }
         }
 
-        isEstimating = false
+        // Keep API signature; caller awaits immediately, but work happens in the managed task.
+        await feePreviewTask?.value
     }
 
     private func performSend() async {
+        print("🧭 UI action: performSend tapped wallet_id=\(walletManager.getCurrentWalletId() ?? "(none)") isMaxMode=\(isMaxMode) sendFromSubaddressEnabled=\(sendFromSubaddressEnabled) fromSubaddressMinor=\(fromSubaddressMinor) amountXMR=\(amountXMR) previewReady=\(previewReady) feePiconero=\(estimatedFeePiconero.map(String.init) ?? "(nil)") toAddress_prefix=\(String(toAddress.prefix(12)))")
+
         guard let ring = parsedRingLen(),
               looksLikeAddress(toAddress) else {
             errorMessage = "Enter a valid address and amount."
@@ -470,49 +522,79 @@ struct SendView: View {
         return overflow ? UInt64.max : prod
     }
 
-    // Real "Send Max" ("sweep"): ask the core to compute the maximum sendable amount (unlocked - fee).
+    // One-shot "Send Max": ask the core to compute the maximum sendable amount (unlocked - fee),
+    // then fill the amount field. IMPORTANT: do NOT enter a sticky "sweep mode".
+    // The user can still hit "Send" and it will behave like a normal exact-amount send.
     private func sendMax() async {
-        errorMessage = nil
-        infoMessage = nil
-        estimatedFeePiconero = nil
-        previewReady = false
+        print("🧭 UI action: sendMax tapped wallet_id=\(walletManager.getCurrentWalletId() ?? "(none)") isMaxMode=\(isMaxMode) sendFromSubaddressEnabled=\(sendFromSubaddressEnabled) fromSubaddressMinor=\(fromSubaddressMinor) amountXMR_before=\(amountXMR) toAddress_prefix=\(String(toAddress.prefix(12)))")
 
-        guard looksLikeAddress(toAddress) else {
-            errorMessage = "Enter a valid address."
-            return
-        }
+        // Cancel any previous sweep preview and start a new one.
+        sweepPreviewTask?.cancel()
 
-        let ring = parsedRingLen() ?? 16
+        sweepPreviewTask = Task {
+            // Small debounce to coalesce rapid taps / state changes.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if Task.isCancelled { return }
 
-        do {
-            let res: (amount: UInt64, fee: UInt64)
-            if sendFromSubaddressEnabled {
-                res = try await walletManager.previewSweep(fromSubaddressMinor: fromSubaddressMinor, toAddress: toAddress, ringLen: ring)
-            } else {
-                res = try await walletManager.previewSweep(toAddress: toAddress, ringLen: ring)
+            await MainActor.run {
+                errorMessage = nil
+                infoMessage = nil
+                estimatedFeePiconero = nil
+                previewReady = false
             }
 
-            let amount = res.amount
-            let fee = res.fee
-
-            guard amount > 0 else {
-                errorMessage = "No unlocked balance available to sweep after fee."
-                isMaxMode = false
+            guard looksLikeAddress(toAddress) else {
+                await MainActor.run {
+                    errorMessage = "Enter a valid address."
+                }
                 return
             }
 
-            estimatedFeePiconero = fee
-            previewReady = true
-            isMaxMode = true
+            let ring = parsedRingLen() ?? 16
 
-            let xmr = viewModel.piconeroToXMR(amount)
-            amountXMR = String(format: "%.12f", xmr)
-            infoMessage = "Amount set to max spendable (sweep). Final amount may change slightly at send time due to fee changes."
-        } catch {
-            previewReady = false
-            isMaxMode = false
-            errorMessage = "Fee preview failed: \(error.localizedDescription)"
+            do {
+                let res: (amount: UInt64, fee: UInt64)
+                if sendFromSubaddressEnabled {
+                    res = try await walletManager.previewSweep(fromSubaddressMinor: fromSubaddressMinor, toAddress: toAddress, ringLen: ring)
+                } else {
+                    res = try await walletManager.previewSweep(toAddress: toAddress, ringLen: ring)
+                }
+
+                if Task.isCancelled { return }
+
+                let amount = res.amount
+                let fee = res.fee
+
+                guard amount > 0 else {
+                    await MainActor.run {
+                        errorMessage = "No unlocked balance available to send after fee."
+                        isMaxMode = false
+                        previewReady = false
+                    }
+                    return
+                }
+
+                await MainActor.run {
+                    estimatedFeePiconero = fee
+                    previewReady = true
+                    // One-shot behavior: do NOT set isMaxMode=true here.
+                    isMaxMode = false
+
+                    let xmr = viewModel.piconeroToXMR(amount)
+                    amountXMR = String(format: "%.12f", xmr)
+                    infoMessage = "Amount set to max spendable. Final fee may change slightly at send time."
+                }
+            } catch {
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    previewReady = false
+                    isMaxMode = false
+                    errorMessage = "Fee preview failed: \(error.localizedDescription)"
+                }
+            }
         }
+
+        await sweepPreviewTask?.value
     }
 }
 

@@ -440,50 +440,67 @@ actor WalletStorage {
     }
 
     private func saveMnemonic(_ mnemonic: String, requireBiometrics: Bool) throws {
-        try deleteMnemonic()
-
+        // On iOS, Keychain writes should be robust:
+        // - Prefer "add or update" behavior (do not require a prior delete).
+        // - Use a simple user-presence policy for biometric/passcode unlock (more typical UX).
+        //
+        // Note: We still keep ThisDeviceOnly so the mnemonic will not migrate via iCloud backups.
         #if targetEnvironment(simulator)
         defaults.set(mnemonic, forKey: simulatorMnemonicKey)
         return
         #else
         let mnemonicData = Data(mnemonic.utf8)
 
-        let addQuery: [String: Any]
+        // Base identity of the keychain item (no data).
+        let base: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: mnemonicAccount
+        ]
+
+        // Attributes/value we want to set.
+        let desiredAttributes: [String: Any]
         if requireBiometrics {
+            // Typical behavior: require user presence (Face ID/Touch ID OR device passcode fallback).
             guard let accessControl = SecAccessControlCreateWithFlags(
                 kCFAllocatorDefault,
                 kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-                [.biometryCurrentSet, .userPresence],
+                [.userPresence],
                 nil
             ) else {
                 throw WalletStorageError.keychain(errSecParam)
             }
             #if DEBUG
-            print("🔐 Saving mnemonic with biometric protection")
+            print("🔐 Saving mnemonic with user-presence protection (biometrics/passcode)")
             #endif
-            addQuery = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: keychainService,
-                kSecAttrAccount as String: mnemonicAccount,
-                kSecValueData as String: mnemonicData,
-                kSecAttrAccessControl as String: accessControl
+            desiredAttributes = [
+                kSecAttrAccessControl as String: accessControl,
+                kSecValueData as String: mnemonicData
             ]
         } else {
             #if DEBUG
             print("🔐 Saving mnemonic without biometrics using accessibility \(String(describing: kSecAttrAccessibleWhenUnlockedThisDeviceOnly))")
             #endif
-            addQuery = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: keychainService,
-                kSecAttrAccount as String: mnemonicAccount,
+            desiredAttributes = [
                 kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
                 kSecValueData as String: mnemonicData
             ]
         }
 
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        // Attempt to add first.
+        var addQuery = base
+        for (k, v) in desiredAttributes { addQuery[k] = v }
+
+        var status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            // Update existing item instead of failing.
+            // For update, the value/attributes must be supplied in the "attributesToUpdate" dictionary.
+            let attributesToUpdate = desiredAttributes
+            status = SecItemUpdate(base as CFDictionary, attributesToUpdate as CFDictionary)
+        }
+
         guard status == errSecSuccess else {
-            print("🔐 Keychain add failed with status \(status)")
+            print("🔐 Keychain save failed with status \(status) requireBiometrics=\(requireBiometrics)")
             throw WalletStorageError.keychain(status)
         }
         #endif

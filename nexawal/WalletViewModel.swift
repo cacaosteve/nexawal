@@ -316,6 +316,9 @@ class WalletViewModel: ObservableObject {
                 biometricsEnabled: requireBiometrics
             )
             storedMetadata = metadata
+
+            // Persistence is authoritative: if we can't store the wallet, we should not continue,
+            // otherwise the user will appear "synced" but lose the wallet on next launch.
             do {
                 try await storage.storeWallet(
                     mnemonic: normalizedMnemonic,
@@ -323,9 +326,33 @@ class WalletViewModel: ObservableObject {
                     requireBiometrics: requireBiometrics
                 )
             } catch {
-                let message = "Wallet opened, but persistence failed: \(error.localizedDescription)"
-                print("⚠️ \(message)")
-                errorMessage = message
+                // Fallback: if biometric-protected Keychain storage fails, retry storing without biometrics.
+                // This keeps the wallet usable while still storing the mnemonic in the Keychain.
+                if requireBiometrics {
+                    print("⚠️ Wallet persistence failed with biometrics enabled; retrying without biometrics. error=\(error.localizedDescription)")
+                    do {
+                        try await storage.storeWallet(
+                            mnemonic: normalizedMnemonic,
+                            metadata: metadata,
+                            requireBiometrics: false
+                        )
+                        biometricsEnabled = false
+                        storedMetadata?.biometricsEnabled = false
+                        print("🔐 Wallet persisted successfully without biometrics fallback.")
+                    } catch {
+                        let message = "Wallet persistence failed (biometrics + fallback): \(error.localizedDescription)"
+                        print("⚠️ \(message)")
+                        errorMessage = message
+                        isWalletOpen = false
+                        return
+                    }
+                } else {
+                    let message = "Wallet persistence failed: \(error.localizedDescription)"
+                    print("⚠️ \(message)")
+                    errorMessage = message
+                    isWalletOpen = false
+                    return
+                }
             }
 
             await refreshWallet()
@@ -372,8 +399,31 @@ class WalletViewModel: ObservableObject {
                 }
 
                 // Refresh transfer history at end of refresh (authoritative)
-                if let rows = try? WalletCoreFFIClient.listTransfers(walletId: self.walletId) {
+                do {
+                    // 1) Log the raw JSON we get from walletcore so we can verify whether "out" rows exist at all.
+                    let json = try WalletCoreFFIClient.exportTransfersJSON(walletId: self.walletId)
+                    let prefix = String(json.prefix(1200))
+                    print("🧾 transfers_json wallet_id=\(self.walletId) bytes=\(json.utf8.count) prefix=\(prefix)")
+
+                    // 2) Decode into typed rows and publish to UI.
+                    let rows = try WalletCoreFFIClient.listTransfers(walletId: self.walletId)
                     await MainActor.run { self.transfers = rows }
+
+                    // 3) Summarize directions to quickly see if we have any outgoing/spend rows.
+                    var inCount = 0
+                    var outCount = 0
+                    var selfCount = 0
+                    for r in rows {
+                        switch r.direction.lowercased() {
+                        case "in": inCount += 1
+                        case "out": outCount += 1
+                        case "self": selfCount += 1
+                        default: break
+                        }
+                    }
+                    print("🧾 transfers_summary wallet_id=\(self.walletId) rows=\(rows.count) in=\(inCount) out=\(outCount) self=\(selfCount)")
+                } catch {
+                    print("⚠️ transfers_refresh_failed wallet_id=\(self.walletId) error=\(error.localizedDescription)")
                 }
 
                 await self.persistMetadataUpdate()
@@ -581,6 +631,31 @@ class WalletViewModel: ObservableObject {
                         let rows = await MainActor.run { () -> [WalletCoreFFIClient.Transfer]? in
                             // WalletManager is an actor; avoid calling actor-isolated methods from this main-actor block.
                             return try? WalletCoreFFIClient.listTransfers(walletId: self.walletId)
+                        }
+
+                        // Debug: periodically log the raw JSON and a direction summary while polling so we can
+                        // catch outgoing/spend rows appearing mid-sync.
+                        do {
+                            let json = try WalletCoreFFIClient.exportTransfersJSON(walletId: self.walletId)
+                            let prefix = String(json.prefix(600))
+                            print("🧾 transfers_json(poll) wallet_id=\(self.walletId) bytes=\(json.utf8.count) prefix=\(prefix)")
+
+                            if let rows {
+                                var inCount = 0
+                                var outCount = 0
+                                var selfCount = 0
+                                for r in rows {
+                                    switch r.direction.lowercased() {
+                                    case "in": inCount += 1
+                                    case "out": outCount += 1
+                                    case "self": selfCount += 1
+                                    default: break
+                                    }
+                                }
+                                print("🧾 transfers_summary(poll) wallet_id=\(self.walletId) rows=\(rows.count) in=\(inCount) out=\(outCount) self=\(selfCount)")
+                            }
+                        } catch {
+                            print("⚠️ transfers_poll_debug_failed wallet_id=\(self.walletId) error=\(error.localizedDescription)")
                         }
                         if let rows {
                             await MainActor.run {

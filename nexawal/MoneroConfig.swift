@@ -8,11 +8,11 @@ import Darwin
 struct MoneroConfig {
 
     // MARK: - Constants / Defaults
-    nonisolated static let defaultAddress = "mini.nexatrode.com:18089"
+    nonisolated static let defaultAddress = "192.168.4.137:18081"
     nonisolated static let userDefaultsKey = "monero_daemon_address"
 
     // I2P defaults and keys (kept for UI compatibility)
-    nonisolated static let defaultI2PRPCAddress = "cvxtgqjorfif6i5x5fenys6fj7hzddbgavpyutps6gphywnlklqa.b32.i2p:18089"
+    nonisolated static let defaultI2PRPCAddress = "cvxtgqjorfif6i5x5fenys6fj7hzddbgavpyutps6gphywnlklqa.b32.i2p:18081"
     nonisolated static let userDefaultsI2PModeKey = "monero_i2p_mode"
     nonisolated static let userDefaultsI2PRPCKey = "monero_i2p_rpc_address"
     nonisolated static let userDefaultsI2PProxyKey = "monero_i2p_http_proxy"
