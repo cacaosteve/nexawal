@@ -8,7 +8,7 @@ import Darwin
 struct MoneroConfig {
 
     // MARK: - Constants / Defaults
-    nonisolated static let defaultAddress = "192.168.4.137:18081"
+    nonisolated static let defaultAddress = "127.0.0.1:18081"
     nonisolated static let userDefaultsKey = "monero_daemon_address"
 
     // I2P defaults and keys (kept for UI compatibility)
