@@ -5,8 +5,8 @@
 //  Main wallet view showing balance and address
 //
 
-import SwiftUI
 import MoneroWalletCoreFFI
+import SwiftUI
 import UIKit
 
 struct WalletView: View {
@@ -78,7 +78,9 @@ struct WalletView: View {
         return f.string(from: d)
     }
 
-    private func sortedTransfers(_ items: [WalletCoreFFIClient.Transfer]) -> [WalletCoreFFIClient.Transfer] {
+    private func sortedTransfers(_ items: [WalletCoreFFIClient.Transfer]) -> [WalletCoreFFIClient
+        .Transfer]
+    {
         items.sorted { a, b in
             // Pending first
             if a.isPending != b.isPending { return a.isPending && !b.isPending }
@@ -118,9 +120,11 @@ struct WalletView: View {
                             .font(.subheadline)
                             .foregroundColor(.secondary)
 
-                        Text(viewModel.formatXMR(viewModel.piconeroToXMR(viewModel.unlockedBalance)))
-                            .font(.system(size: 24, weight: .semibold, design: .monospaced))
-                            .foregroundColor(.blue)
+                        Text(
+                            viewModel.formatXMR(viewModel.piconeroToXMR(viewModel.unlockedBalance))
+                        )
+                        .font(.system(size: 24, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.blue)
                     }
                     .padding()
                     .frame(maxWidth: .infinity)
@@ -208,15 +212,14 @@ struct WalletView: View {
                                 .progressViewStyle(LinearProgressViewStyle())
                             Text(
                                 viewModel.isSynced
-                                ? "Wallet is fully synced"
-                                : (
-                                    (viewModel.chainHeight == 0 || viewModel.lastScannedHeight == viewModel.restoreHeight)
-                                    ? "Initializing scan…"
-                                    : "Syncing… \(viewModel.remainingBlocks) blocks remaining"
-                                )
+                                    ? "Wallet is fully synced"
+                                    : ((viewModel.chainHeight == 0
+                                        || viewModel.lastScannedHeight == viewModel.restoreHeight)
+                                        ? "Initializing scan…"
+                                        : "Syncing… \(viewModel.remainingBlocks) blocks remaining")
                             )
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                         }
 
                         // Transaction History (Transfers)
@@ -259,11 +262,15 @@ struct WalletView: View {
                                                         Text(ts)
                                                             .font(.caption2)
                                                             .foregroundColor(.secondary)
-                                                            .accessibilityLabel(formatTransferTimestampAbsolute(t) ?? ts)
+                                                            .accessibilityLabel(
+                                                                formatTransferTimestampAbsolute(t)
+                                                                    ?? ts)
                                                     }
 
                                                     Text(t.txid)
-                                                        .font(.system(.caption2, design: .monospaced))
+                                                        .font(
+                                                            .system(.caption2, design: .monospaced)
+                                                        )
                                                         .foregroundColor(.secondary)
                                                         .lineLimit(1)
                                                         .truncationMode(.middle)
@@ -275,13 +282,18 @@ struct WalletView: View {
                                                 VStack(alignment: .trailing, spacing: 4) {
                                                     let amtXMR = viewModel.piconeroToXMR(t.amount)
                                                     Text(viewModel.formatXMR(amtXMR))
-                                                        .font(.system(.caption, design: .monospaced))
+                                                        .font(
+                                                            .system(.caption, design: .monospaced)
+                                                        )
                                                         .foregroundColor(amountColor(t))
 
                                                     if let fee = t.fee {
                                                         let feeXMR = viewModel.piconeroToXMR(fee)
                                                         Text("Fee \(viewModel.formatXMR(feeXMR))")
-                                                            .font(.system(.caption2, design: .monospaced))
+                                                            .font(
+                                                                .system(
+                                                                    .caption2, design: .monospaced)
+                                                            )
                                                             .foregroundColor(.secondary)
                                                     }
                                                 }
@@ -293,7 +305,10 @@ struct WalletView: View {
                                         Divider()
                                     }
                                 }
-                                .sheet(isPresented: $showTransferDetails, onDismiss: { selectedTransfer = nil }) {
+                                .sheet(
+                                    isPresented: $showTransferDetails,
+                                    onDismiss: { selectedTransfer = nil }
+                                ) {
                                     if let t = selectedTransfer {
                                         NavigationView {
                                             List {
@@ -302,30 +317,47 @@ struct WalletView: View {
                                                         Text("Type")
                                                         Spacer()
                                                         Text(directionLabel(t))
-                                                            .font(.system(.caption, design: .monospaced))
+                                                            .font(
+                                                                .system(
+                                                                    .caption, design: .monospaced)
+                                                            )
                                                             .foregroundColor(.secondary)
                                                     }
                                                     HStack {
                                                         Text("Status")
                                                         Spacer()
                                                         Text(t.isPending ? "Pending" : "Confirmed")
-                                                            .font(.system(.caption, design: .monospaced))
+                                                            .font(
+                                                                .system(
+                                                                    .caption, design: .monospaced)
+                                                            )
                                                             .foregroundColor(.secondary)
                                                     }
                                                     HStack {
                                                         Text("Amount")
                                                         Spacer()
-                                                        Text(viewModel.formatXMR(viewModel.piconeroToXMR(t.amount)))
-                                                            .font(.system(.caption, design: .monospaced))
-                                                            .foregroundColor(amountColor(t))
+                                                        Text(
+                                                            viewModel.formatXMR(
+                                                                viewModel.piconeroToXMR(t.amount))
+                                                        )
+                                                        .font(
+                                                            .system(.caption, design: .monospaced)
+                                                        )
+                                                        .foregroundColor(amountColor(t))
                                                     }
                                                     if let fee = t.fee {
                                                         HStack {
                                                             Text("Fee")
                                                             Spacer()
-                                                            Text(viewModel.formatXMR(viewModel.piconeroToXMR(fee)))
-                                                                .font(.system(.caption, design: .monospaced))
-                                                                .foregroundColor(.secondary)
+                                                            Text(
+                                                                viewModel.formatXMR(
+                                                                    viewModel.piconeroToXMR(fee))
+                                                            )
+                                                            .font(
+                                                                .system(
+                                                                    .caption, design: .monospaced)
+                                                            )
+                                                            .foregroundColor(.secondary)
                                                         }
                                                     }
                                                 }
@@ -335,22 +367,33 @@ struct WalletView: View {
                                                         Text("Height")
                                                         Spacer()
                                                         Text(t.height.map(String.init) ?? "—")
-                                                            .font(.system(.caption, design: .monospaced))
+                                                            .font(
+                                                                .system(
+                                                                    .caption, design: .monospaced)
+                                                            )
                                                             .foregroundColor(.secondary)
                                                     }
                                                     HStack {
                                                         Text("Confirmations")
                                                         Spacer()
                                                         Text("\(t.confirmations)")
-                                                            .font(.system(.caption, design: .monospaced))
+                                                            .font(
+                                                                .system(
+                                                                    .caption, design: .monospaced)
+                                                            )
                                                             .foregroundColor(.secondary)
                                                     }
                                                     HStack {
                                                         Text("Time")
                                                         Spacer()
-                                                        Text(formatTransferTimestampAbsolute(t) ?? "—")
-                                                            .font(.system(.caption, design: .monospaced))
-                                                            .foregroundColor(.secondary)
+                                                        Text(
+                                                            formatTransferTimestampAbsolute(t)
+                                                                ?? "—"
+                                                        )
+                                                        .font(
+                                                            .system(.caption, design: .monospaced)
+                                                        )
+                                                        .foregroundColor(.secondary)
                                                     }
                                                 }
 
@@ -359,7 +402,10 @@ struct WalletView: View {
                                                         Text("TXID")
                                                         Spacer()
                                                         Text(t.txid)
-                                                            .font(.system(.caption2, design: .monospaced))
+                                                            .font(
+                                                                .system(
+                                                                    .caption2, design: .monospaced)
+                                                            )
                                                             .foregroundColor(.secondary)
                                                             .textSelection(.enabled)
                                                     }
@@ -392,9 +438,14 @@ struct WalletView: View {
                         HStack {
                             Text("Policy")
                             Spacer()
-                            Text(MoneroConfig.networkPolicy == .clearnet ? "Clearnet only" : (MoneroConfig.networkPolicy == .i2p ? "I2P only" : "Scan clearnet, broadcast I2P"))
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundColor(.secondary)
+                            Text(
+                                MoneroConfig.networkPolicy == .clearnet
+                                    ? "Clearnet only"
+                                    : (MoneroConfig.networkPolicy == .i2p
+                                        ? "I2P only" : "Scan clearnet, broadcast I2P")
+                            )
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.secondary)
                         }
 
                         HStack {
@@ -413,7 +464,10 @@ struct WalletView: View {
                                 .foregroundColor(.secondary)
                         }
 
-                        if (MoneroConfig.networkPolicy == .i2p || MoneroConfig.networkPolicy == .hybrid), let proxy = MoneroConfig.i2pHTTPProxyAddress {
+                        if MoneroConfig.networkPolicy == .i2p
+                            || MoneroConfig.networkPolicy == .hybrid,
+                            let proxy = MoneroConfig.i2pHTTPProxyAddress
+                        {
                             HStack {
                                 Text("I2P Proxy")
                                 Spacer()
@@ -515,7 +569,7 @@ struct WalletView: View {
                 }
                 .padding(.vertical)
             }
-            .navigationTitle("Monero Wallet")
+            .navigationTitle("")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { showSettings = true }) {
@@ -568,7 +622,7 @@ struct SettingsView: View {
                         .font(.system(.body, design: .monospaced))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                    Text("Example: 127.0.0.1:18081\n(Full URL will be: http://127.0.0.1::18081)")
+                    Text("Example: 192.168.4.137:18081\n(Full URL will be: http://192.168.4.137::18081)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -640,7 +694,8 @@ struct SettingsView: View {
                             MoneroConfig.setGapLimit(gap)
                             Task {
                                 if let id = await WalletManager.shared.getCurrentWalletId() {
-                                    try? WalletCoreFFIClient.setGapLimit(walletId: id, gapLimit: gap)
+                                    try? WalletCoreFFIClient.setGapLimit(
+                                        walletId: id, gapLimit: gap)
                                 }
                             }
                         }
