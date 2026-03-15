@@ -385,6 +385,7 @@ struct SendView: View {
         sentFeePiconero = nil
 
         do {
+            try await viewModel.authenticateForSensitiveAction(prompt: "Authenticate to send Monero")
             if isMaxMode {
                 // In max mode, always sweep at send time so fee changes are handled correctly.
                 let result: (txid: String, amount: UInt64, fee: UInt64)

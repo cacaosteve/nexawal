@@ -599,6 +599,10 @@ struct SettingsView: View {
     @State private var rescanHeightInput: String
     @State private var gapLimitInput: String
     @State private var accountGapInput: String
+    @State private var requireBiometrics: Bool
+    @State private var biometricsAvailable: Bool = false
+    @State private var biometricsEnrolled: Bool = false
+    @State private var showAdvancedRecovery: Bool = false
     @Environment(\.dismiss) var dismiss
 
     init(viewModel: WalletViewModel) {
@@ -608,6 +612,7 @@ struct SettingsView: View {
         self._rescanHeightInput = State(initialValue: heightValue == 0 ? "" : String(heightValue))
         self._gapLimitInput = State(initialValue: String(MoneroConfig.gapLimit))
         self._accountGapInput = State(initialValue: String(MoneroConfig.accountGap))
+        self._requireBiometrics = State(initialValue: viewModel.biometricsEnabled)
     }
 
     private var isRescanInProgress: Bool {
@@ -622,30 +627,38 @@ struct SettingsView: View {
                         .font(.system(.body, design: .monospaced))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                    Text("Example: 192.168.4.137:18081\n(Full URL will be: http://192.168.4.137::18081)")
+                    Text("Example: 192.168.4.137:18081\n(Full URL will be: http://192.168.4.137:18081)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
-                Section(header: Text("Restore & Gaps")) {
+                Section(header: Text("Restore & Rescan")) {
                     TextField("Restore height (optional)", text: $rescanHeightInput)
                         .keyboardType(.numberPad)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                    TextField("Gap limit (1-100000)", text: $gapLimitInput)
-                        .keyboardType(.numberPad)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                    Text("Controls how many subaddresses are scanned")
+                    Text("Use an earlier height if funds are missing after import, or rescan from 0 if you need a full recovery.")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    TextField("Account lookahead (1-1000)", text: $accountGapInput)
-                        .keyboardType(.numberPad)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                    Text("Number of accounts to scan starting at account 0")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                }
+
+                Section(header: Text("Security")) {
+                    Toggle("Require Face ID / Touch ID", isOn: $requireBiometrics)
+                        .disabled(!biometricsAvailable || !biometricsEnrolled)
+
+                    if !biometricsAvailable {
+                        Text("Biometric or device authentication is not available on this device.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else if !biometricsEnrolled {
+                        Text("Biometric authentication is available, but no biometric data is enrolled.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("When enabled, opening the stored wallet and sending funds will require device authentication.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 Section(header: Text("Maintenance")) {
@@ -679,6 +692,32 @@ struct SettingsView: View {
                     }
                     .disabled(isRescanInProgress)
                 }
+
+                Section(header: Text("Advanced Recovery")) {
+                    DisclosureGroup("Scan additional accounts or subaddresses", isExpanded: $showAdvancedRecovery) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Only change these values if a wallet import appears incomplete after using the correct restore height.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            TextField("Gap limit (1-100000)", text: $gapLimitInput)
+                                .keyboardType(.numberPad)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                            Text("Controls how many receive subaddresses are scanned for this wallet.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            TextField("Account lookahead (1-1000)", text: $accountGapInput)
+                                .keyboardType(.numberPad)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                            Text("Controls how many Monero accounts are scanned starting at account 0.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
             }
             .navigationTitle("Settings")
             .toolbar {
@@ -704,9 +743,17 @@ struct SettingsView: View {
                             MoneroConfig.setAccountGap(clamped)
                         }
 
-                        dismiss()
+                        Task {
+                            await viewModel.updateBiometricProtection(enabled: requireBiometrics)
+                            dismiss()
+                        }
                     }
                 }
+            }
+            .task {
+                let availability = await viewModel.biometricAvailability()
+                biometricsAvailable = availability.available
+                biometricsEnrolled = availability.enrolled
             }
         }
     }

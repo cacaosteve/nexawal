@@ -22,8 +22,19 @@ struct nexawalApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(viewModel: viewModel)
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+                    viewModel.markNeedsRefreshRetryIfInitialSyncInterrupted()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                    viewModel.resumeOnDidBecomeActive()
+                }
         }
         .onChange(of: scenePhase) {
+            if scenePhase == .active {
+                viewModel.resumeOnForeground()
+                return
+            }
+
             // Snapshot on either inactive or background, then resume on foreground.
             // We don't attempt to keep scanning in background; this is best-effort persistence only.
             guard scenePhase == .inactive || scenePhase == .background else { return }

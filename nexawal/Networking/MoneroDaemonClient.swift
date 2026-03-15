@@ -49,7 +49,7 @@ enum MoneroDaemonClient {
     // MARK: - Public API
 
     /// Calls the daemon JSON-RPC `get_info` method.
-    /// - Parameter baseURL: e.g. "http://127.0.0.1:18081"
+    /// - Parameter baseURL: e.g. "http://192.168.4.137:18081"
     /// - Parameter proxyAddress: Optional HTTP proxy "host:port" (useful for I2P).
     /// - Returns: Parsed heights (height + target_height).
     static func getInfo(

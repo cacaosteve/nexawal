@@ -37,6 +37,7 @@ class WalletViewModel: ObservableObject {
     @Published var chainHeight: UInt64 = 0
     @Published var chainTime: UInt64 = 0
     @Published var scanBlocksPerSecond: Double = 0.0
+    @Published var balanceIsStaleWhileSyncing: Bool = false
 
     // MARK: - Dependencies
 
@@ -60,6 +61,7 @@ class WalletViewModel: ObservableObject {
     private var lastPollingUpdate: Date?
     private var pendingSyncPollRestart: Bool = false
     private let pollingStagnationInterval: TimeInterval = 5.0
+    private var needsRefreshRetryOnNextActive: Bool = false
 
     // Single-wallet behavior: track the seed we last opened to avoid accidental destructive operations.
     // NOTE: This is a privacy-preserving fingerprint (SHA256 of normalized mnemonic), not the mnemonic itself.
@@ -71,8 +73,15 @@ class WalletViewModel: ObservableObject {
 
     // MARK: - Computed flags
 
+    private var hasObservedNetworkTip: Bool {
+        chainHeight > restoreHeight || chainTime > 0
+    }
+
     var syncProgress: Double {
         let tol: UInt64 = 3
+        guard hasObservedNetworkTip else {
+            return 0.0
+        }
         // Consider near-tip within tolerance as fully synced
         if chainHeight > 0 && lastScannedHeight + tol >= chainHeight {
             return 1.0
@@ -91,6 +100,9 @@ class WalletViewModel: ObservableObject {
     }
 
     var remainingBlocks: UInt64 {
+        guard hasObservedNetworkTip else {
+            return 0
+        }
         let tol: UInt64 = 3
         let diff = chainHeight > lastScannedHeight ? (chainHeight - lastScannedHeight) : 0
         // Hide tiny residual near tip
@@ -98,6 +110,9 @@ class WalletViewModel: ObservableObject {
     }
 
     var isSynced: Bool {
+        guard hasObservedNetworkTip else {
+            return false
+        }
         let tol: UInt64 = 3
         return chainHeight > 0 && lastScannedHeight + tol >= chainHeight
     }
@@ -114,6 +129,53 @@ class WalletViewModel: ObservableObject {
 
     func piconeroToXMR(_ piconero: UInt64) -> Double {
         Double(piconero) / 1_000_000_000_000.0
+    }
+
+    func biometricAvailability() async -> (available: Bool, enrolled: Bool) {
+        await storage.biometricAvailability()
+    }
+
+    func unlockStoredWallet() async {
+        await loadStoredWalletOnLaunch()
+    }
+
+    func authenticateForSensitiveAction(prompt: String) async throws {
+        try await storage.evaluateBiometricsIfNeeded(prompt: prompt)
+    }
+
+    func updateBiometricProtection(enabled: Bool) async {
+        guard let metadata = storedMetadata else {
+            biometricsEnabled = enabled
+            return
+        }
+        guard !mnemonic.isEmpty else {
+            errorMessage = "Wallet must be unlocked before changing biometric protection."
+            return
+        }
+
+        do {
+            let updatedMetadata = StoredWalletMetadata(
+                walletId: metadata.walletId,
+                restoreHeight: metadata.restoreHeight,
+                lastScannedHeight: metadata.lastScannedHeight,
+                chainHeight: metadata.chainHeight,
+                totalBalance: metadata.totalBalance,
+                unlockedBalance: metadata.unlockedBalance,
+                mainnet: metadata.mainnet,
+                biometricsEnabled: enabled,
+                creationDate: metadata.creationDate,
+                lastUpdated: Date()
+            )
+            try await storage.storeWallet(
+                mnemonic: mnemonic,
+                metadata: updatedMetadata,
+                requireBiometrics: enabled
+            )
+            storedMetadata = updatedMetadata
+            biometricsEnabled = enabled
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     /// Derive the receive address for (account 0, selected subaddress minor).
@@ -394,8 +456,11 @@ class WalletViewModel: ObservableObject {
                 // Always do a final balance fetch at the end of refresh so totals are correct.
                 let balance = try await self.walletManager.getBalance()
                 await MainActor.run {
-                    self.totalBalance = balance.total
-                    self.unlockedBalance = balance.unlocked
+                    self.applyBalanceSnapshot(
+                        total: balance.total,
+                        unlocked: balance.unlocked,
+                        allowAuthoritativeZero: self.isSynced
+                    )
                 }
 
                 // Refresh transfer history at end of refresh (authoritative)
@@ -438,6 +503,53 @@ class WalletViewModel: ObservableObject {
         }
     }
 
+    func resumeOnForeground() {
+        guard isWalletOpen else { return }
+        if needsRefreshRetryOnNextActive {
+            resumeOnDidBecomeActive()
+            return
+        }
+        guard !isRefreshing else { return }
+        guard !isSynced else { return }
+
+        Task { [weak self] in
+            await self?.refreshWallet()
+        }
+    }
+
+    func markNeedsRefreshRetryIfInitialSyncInterrupted() {
+        guard isWalletOpen else { return }
+        guard isRefreshing else { return }
+        guard lastScannedHeight <= restoreHeight else { return }
+
+        needsRefreshRetryOnNextActive = true
+        print("🧭 markNeedsRefreshRetryIfInitialSyncInterrupted set retry flag (lastScanned=\(lastScannedHeight) restoreHeight=\(restoreHeight))")
+    }
+
+    func resumeOnDidBecomeActive() {
+        guard isWalletOpen else { return }
+        guard !isSynced else { return }
+
+        let shouldForceRetry = needsRefreshRetryOnNextActive || (isRefreshing && lastScannedHeight <= restoreHeight)
+        if shouldForceRetry {
+            needsRefreshRetryOnNextActive = false
+            cancelRefresh()
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 750_000_000)
+                await self?.refreshWallet()
+            }
+            return
+        } else {
+            needsRefreshRetryOnNextActive = false
+        }
+
+        guard !isRefreshing else { return }
+
+        Task { [weak self] in
+            await self?.refreshWallet()
+        }
+    }
+
     /// Cancel an in-flight refresh (stops waiting/polling and returns control to UI).
     /// Note: the core may continue scanning in the background; this is a UI-level cancel.
     func cancelRefresh() {
@@ -466,9 +578,11 @@ class WalletViewModel: ObservableObject {
             }
 
             let balance = try await walletManager.getBalance()
-
-            totalBalance = balance.total
-            unlockedBalance = balance.unlocked
+            applyBalanceSnapshot(
+                total: balance.total,
+                unlocked: balance.unlocked,
+                allowAuthoritativeZero: isSynced
+            )
 
             await persistMetadataUpdate { metadata in
                 metadata.totalBalance = balance.total
@@ -499,6 +613,7 @@ class WalletViewModel: ObservableObject {
         chainHeight = max(chainHeight, height)
         totalBalance = 0
         unlockedBalance = 0
+        balanceIsStaleWhileSyncing = false
         startSyncStatusPolling()
 
         defer {
@@ -512,8 +627,11 @@ class WalletViewModel: ObservableObject {
             applySyncStatus(status)
 
             let balance = try await walletManager.getBalance()
-            totalBalance = balance.total
-            unlockedBalance = balance.unlocked
+            applyBalanceSnapshot(
+                total: balance.total,
+                unlocked: balance.unlocked,
+                allowAuthoritativeZero: true
+            )
 
             await persistMetadataUpdate { [self] metadata in
                 metadata.restoreHeight = self.restoreHeight
@@ -603,8 +721,11 @@ class WalletViewModel: ObservableObject {
                         do {
                             let balance = try await self.walletManager.getBalance()
                             await MainActor.run {
-                                self.totalBalance = balance.total
-                                self.unlockedBalance = balance.unlocked
+                                self.applyBalanceSnapshot(
+                                    total: balance.total,
+                                    unlocked: balance.unlocked,
+                                    allowAuthoritativeZero: self.isSynced
+                                )
                                 self.lastBalancePollAt = Date()
                             }
                             await self.persistMetadataUpdate { metadata in
@@ -723,6 +844,7 @@ class WalletViewModel: ObservableObject {
         lastScannedHeight = normalizedLastScanned
         totalBalance = snapshot.totalBalance
         unlockedBalance = snapshot.unlockedBalance
+        balanceIsStaleWhileSyncing = false
         biometricsEnabled = snapshot.biometricsEnabled
         chainTime = 0
         isMainnet = snapshot.mainnet
@@ -775,26 +897,51 @@ class WalletViewModel: ObservableObject {
             let mnemonic = try await storage.loadMnemonic(prompt: "Authenticate to unlock NexaWal")
             self.mnemonic = mnemonic
             lastOpenedMnemonicFingerprint = Self.mnemonicFingerprint(mnemonic)
+            let normalizedWords = mnemonic
+                .components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+            print("🧭 loadStoredWalletOnLaunch metadata walletId=\(metadata.walletId) restoreHeight=\(metadata.restoreHeight) mainnet=\(metadata.mainnet) biometricsEnabled=\(metadata.biometricsEnabled)")
+            print("🧭 loadStoredWalletOnLaunch mnemonic fingerprint=\(lastOpenedMnemonicFingerprint ?? "(nil)") words=\(normalizedWords.count)")
 
-            let address = try await walletManager.derivePrimaryAddress(
-                mnemonic: mnemonic,
-                mainnet: metadata.mainnet
-            )
-            walletAddress = address
+            do {
+                let address = try await walletManager.derivePrimaryAddress(
+                    mnemonic: mnemonic,
+                    mainnet: metadata.mainnet
+                )
+                walletAddress = address
+                print("🧭 loadStoredWalletOnLaunch derived primary address prefix=\(String(address.prefix(12)))")
+            } catch {
+                print("⚠️ loadStoredWalletOnLaunch derivePrimaryAddress failed: \(error)")
+                throw error
+            }
 
             // Load receive subaddresses for this wallet session.
             await loadReceiveSubaddresses()
 
             // Open with the persisted restore height for this wallet.
             // If the user later replaces the seed, createWallet() will clear metadata+cache first.
+            do {
             try await walletManager.openWallet(
                 mnemonic: mnemonic,
                 walletId: walletId,
                 restoreHeight: metadata.restoreHeight,
                 mainnet: metadata.mainnet
             )
+                print("🧭 loadStoredWalletOnLaunch openWallet succeeded walletId=\(walletId)")
+            } catch {
+                print("⚠️ loadStoredWalletOnLaunch openWallet failed: \(error)")
+                throw error
+            }
 
             isWalletOpen = true
+
+            if let balance = try? await walletManager.getBalance() {
+                applyBalanceSnapshot(
+                    total: balance.total,
+                    unlocked: balance.unlocked,
+                    allowAuthoritativeZero: isSynced
+                )
+            }
 
             if let status = try? await walletManager.getSyncStatus() {
                 applySyncStatus(status)
@@ -811,6 +958,7 @@ class WalletViewModel: ObservableObject {
             }
         } catch {
             print("⚠️ Failed to load stored wallet: \(error)")
+            errorMessage = error.localizedDescription
         }
 
         isLoading = false
@@ -822,5 +970,22 @@ class WalletViewModel: ObservableObject {
             .replacingOccurrences(of: "\n", with: " ")
         let digest = SHA256.hash(data: Data(normalized.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func applyBalanceSnapshot(total: UInt64, unlocked: UInt64, allowAuthoritativeZero: Bool) {
+        let knownTotal = max(totalBalance, storedMetadata?.totalBalance ?? 0)
+        let knownUnlocked = max(unlockedBalance, storedMetadata?.unlockedBalance ?? 0)
+        let hasKnownNonZero = knownTotal > 0 || knownUnlocked > 0
+        let proposedZero = total == 0 && unlocked == 0
+
+        if proposedZero && hasKnownNonZero && !allowAuthoritativeZero {
+            balanceIsStaleWhileSyncing = true
+            print("🧭 Preserving known nonzero balance while sync state is not authoritative (knownTotal=\(knownTotal) proposedTotal=0)")
+            return
+        }
+
+        totalBalance = total
+        unlockedBalance = unlocked
+        balanceIsStaleWhileSyncing = false
     }
 }

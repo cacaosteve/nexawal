@@ -56,6 +56,13 @@ actor WalletManager {
 
     private init() {}
 
+    private func normalizedMnemonic(_ mnemonic: String) -> String {
+        mnemonic
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     // MARK: - Subaddress-constrained helpers (account 0)
 
     private func filterForSubaddressMinor(_ minor: UInt32) -> [String: Any] {
@@ -81,8 +88,9 @@ actor WalletManager {
 
     /// Open or create a wallet from a mnemonic phrase
     func openWallet(mnemonic: String, walletId: String = "main_wallet", restoreHeight: UInt64 = 0, mainnet: Bool = true) throws {
+        let normalizedMnemonic = normalizedMnemonic(mnemonic)
         // Validate mnemonic (should be 25 words)
-        let words = mnemonic.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: .whitespaces)
+        let words = normalizedMnemonic.components(separatedBy: .whitespaces)
         guard words.count == 25 else {
             throw WalletError.invalidMnemonic
         }
@@ -90,7 +98,7 @@ actor WalletManager {
         do {
             try WalletCoreFFIClient.openWalletFromMnemonic(
                 walletId: walletId,
-                mnemonic: mnemonic.trimmingCharacters(in: .whitespacesAndNewlines),
+                mnemonic: normalizedMnemonic,
                 restoreHeight: restoreHeight,
                 mainnet: mainnet
             )
@@ -290,9 +298,13 @@ actor WalletManager {
         var lastProgressAt = Date()
         var lastScannedSnapshot: UInt64 = 0
 
-        // Periodic persistence while refresh is running
+        // Periodic persistence while refresh is running.
+        // Exporting cache is expensive on iOS, so avoid doing it on a short wall-clock cadence.
+        // Prefer a larger interval and only persist after meaningful scan progress.
         var lastPersistAt = Date.distantPast
-        let persistInterval: TimeInterval = 15.0
+        var lastPersistedScannedHeight: UInt64 = 0
+        let persistInterval: TimeInterval = 120.0
+        let persistBlockDelta: UInt64 = 1000
 
         // Periodically sample core error state even if progress is happening.
         // Rationale: wallet2 `/getblocks.bin` decode failures can trigger an internal core fallback
@@ -349,10 +361,13 @@ actor WalletManager {
             // Persist scan progress periodically while refresh is still running.
             // This improves resume after backgrounding, app termination, or transient network issues.
             let now = Date()
-            if now.timeIntervalSince(lastPersistAt) >= persistInterval, status.lastScanned > 0 {
+            if now.timeIntervalSince(lastPersistAt) >= persistInterval,
+               status.lastScanned > 0,
+               status.lastScanned >= lastPersistedScannedHeight + persistBlockDelta {
                 exportCacheAndPersist(for: walletId)
                 print("🗂️ Cache export reason: periodic walletId=\(walletId)")
                 lastPersistAt = now
+                lastPersistedScannedHeight = status.lastScanned
             }
 
             // Only compute effective target after targetHeight is known (daemon reported > restore)
@@ -413,8 +428,9 @@ actor WalletManager {
     /// Derive the primary address from the current wallet's mnemonic
     /// Note: This requires storing the mnemonic, which we'll handle in the ViewModel
     func derivePrimaryAddress(mnemonic: String, mainnet: Bool = true) throws -> String {
+        let normalizedMnemonic = normalizedMnemonic(mnemonic)
         do {
-            return try WalletCoreFFIClient.derivePrimaryAddressFromMnemonic(mnemonic, mainnet: mainnet)
+            return try WalletCoreFFIClient.derivePrimaryAddressFromMnemonic(normalizedMnemonic, mainnet: mainnet)
         } catch {
             throw WalletError.addressDerivationFailed(error.localizedDescription)
         }

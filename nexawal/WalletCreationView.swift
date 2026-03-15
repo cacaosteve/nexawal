@@ -35,6 +35,9 @@ struct WalletCreationView: View {
     // Single-wallet UX: confirm before replacing any existing stored wallet on device.
     @State private var showReplaceConfirm: Bool = false
     @State private var hasStoredWallet: Bool = false
+    @State private var requireBiometrics: Bool = false
+    @State private var biometricsAvailable: Bool = false
+    @State private var biometricsEnrolled: Bool = false
 
     var body: some View {
         NavigationView {
@@ -109,9 +112,37 @@ struct WalletCreationView: View {
                     }
 
                     Toggle("Mainnet", isOn: $isMainnet)
+
+                    Toggle("Require Face ID / Touch ID", isOn: $requireBiometrics)
+                        .disabled(!biometricsAvailable || !biometricsEnrolled)
+
+                    if !biometricsAvailable {
+                        Text("Biometric or device authentication is not available on this device.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else if !biometricsEnrolled {
+                        Text("Biometric authentication is available, but no biometric data is enrolled.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 Section {
+                    if hasStoredWallet {
+                        Button(action: {
+                            Task { await viewModel.unlockStoredWallet() }
+                        }) {
+                            HStack {
+                                if viewModel.isLoading {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle())
+                                }
+                                Text(viewModel.isLoading ? "Unlocking Wallet..." : "Unlock Existing Wallet")
+                            }
+                        }
+                        .disabled(viewModel.isLoading)
+                    }
+
                     if setupMode == .import {
                         VStack(spacing: 10) {
                             Button(action: {
@@ -190,6 +221,10 @@ struct WalletCreationView: View {
         .task {
             // Authoritative: check persisted wallet presence (metadata) rather than in-memory UI state.
             hasStoredWallet = await viewModel.hasStoredWallet()
+            let availability = await viewModel.biometricAvailability()
+            biometricsAvailable = availability.available
+            biometricsEnrolled = availability.enrolled
+            requireBiometrics = availability.available && availability.enrolled
 
             // Best-effort: fetch suggested restore height for create mode.
             // This is UI-only guidance; actual application happens in createOrImport().
@@ -220,13 +255,15 @@ struct WalletCreationView: View {
             await viewModel.replaceWallet(
                 mnemonic: mnemonicInput,
                 restoreHeight: effectiveHeight,
-                mainnet: isMainnet
+                mainnet: isMainnet,
+                requireBiometrics: requireBiometrics
             )
         } else {
             await viewModel.createWallet(
                 mnemonic: mnemonicInput,
                 restoreHeight: effectiveHeight,
-                mainnet: isMainnet
+                mainnet: isMainnet,
+                requireBiometrics: requireBiometrics
             )
         }
 

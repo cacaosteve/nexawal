@@ -8,7 +8,7 @@ import Darwin
 struct MoneroConfig {
 
     // MARK: - Constants / Defaults
-    nonisolated static let defaultAddress = "127.0.0.1:18081"
+    nonisolated static let defaultAddress = "192.168.4.137:18081"
     nonisolated static let userDefaultsKey = "monero_daemon_address"
 
     // I2P defaults and keys (kept for UI compatibility)
@@ -74,7 +74,16 @@ struct MoneroConfig {
     // MARK: - Node address helpers
     nonisolated static var daemonAddress: String {
         if let saved = UserDefaults.standard.string(forKey: userDefaultsKey), !saved.isEmpty {
-            return saved
+            switch saved {
+            case "node.sethforprivacy.com:443",
+                 "https://node.sethforprivacy.com:443",
+                 "node.monerod.org:443",
+                 "https://node.monerod.org:443":
+                UserDefaults.standard.set(defaultAddress, forKey: userDefaultsKey)
+                return defaultAddress
+            default:
+                return saved
+            }
         }
         return defaultAddress
     }
@@ -88,7 +97,11 @@ struct MoneroConfig {
         if address.hasPrefix("http://") || address.hasPrefix("https://") {
             return address
         }
-        return "http://\(address)"
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasSuffix(":443") {
+            return "https://\(trimmed)"
+        }
+        return "http://\(trimmed)"
     }
 
     nonisolated static func scanNodeAddress() -> String {
