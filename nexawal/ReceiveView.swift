@@ -19,11 +19,12 @@ struct ReceiveView: View {
         NavigationView {
             ScrollView {
                 VStack(spacing: 24) {
-                    subaddressSection
+                    heroSection
                     qrSection
                     addressSection
-                    amountSection
                     actionSection
+                    subaddressSection
+                    amountSection
                     if showCopyConfirmation {
                         copyConfirmation
                     }
@@ -61,6 +62,18 @@ struct ReceiveView: View {
         } message: {
             Text("A new receive address (subaddress) will be generated for privacy.")
         }
+    }
+
+    private var heroSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Receive Monero")
+                .font(.title2)
+                .fontWeight(.bold)
+            Text("Show the QR code, copy the address, or create a fresh receive address for better privacy.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var subaddressSection: some View {
@@ -114,11 +127,14 @@ struct ReceiveView: View {
                 .foregroundColor(.secondary)
                 .textSelection(.enabled)
         }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(16)
     }
 
     private var addressSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Wallet Address")
+            Text("Address")
                 .font(.headline)
             Text(viewModel.currentReceiveAddress())
                 .font(addressFont)
@@ -128,6 +144,9 @@ struct ReceiveView: View {
                 .cornerRadius(8)
                 .textSelection(.enabled)
         }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(16)
     }
 
     private var amountSection: some View {
@@ -162,6 +181,9 @@ struct ReceiveView: View {
                 }
             }
         }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(16)
     }
 
     private var actionSection: some View {

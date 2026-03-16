@@ -100,31 +100,82 @@ struct WalletView: View {
         }
     }
 
+    private func syncHeadline() -> String {
+        if viewModel.isSynced { return "Wallet synced" }
+        if viewModel.chainHeight == 0 { return "Connecting to node" }
+        if viewModel.lastScannedHeight == viewModel.restoreHeight { return "Scanning blockchain" }
+        return "Syncing wallet"
+    }
+
+    private func syncDetail() -> String {
+        if viewModel.isSynced {
+            return "Scanned to block \(viewModel.lastScannedHeight)"
+        }
+        if viewModel.chainHeight == 0 {
+            return "Waiting for network height"
+        }
+        if viewModel.lastScannedHeight == viewModel.restoreHeight {
+            return "Fetching initial blocks from \(viewModel.restoreHeight)"
+        }
+        return "\(viewModel.remainingBlocks) blocks remaining"
+    }
+
     var body: some View {
         NavigationView {
             ScrollView {
                 VStack(spacing: 24) {
-                    // Balance Card
-                    VStack(spacing: 16) {
-                        Text("Total Balance")
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Wallet")
                             .font(.headline)
                             .foregroundColor(.secondary)
 
                         Text(viewModel.formatXMR(viewModel.piconeroToXMR(viewModel.totalBalance)))
-                            .font(.system(size: 36, weight: .bold, design: .monospaced))
+                            .font(.system(size: 38, weight: .bold, design: .monospaced))
                             .foregroundColor(.primary)
 
-                        Divider()
+                        if viewModel.unlockedBalance != viewModel.totalBalance {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Unlocked")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text(
+                                    viewModel.formatXMR(
+                                        viewModel.piconeroToXMR(viewModel.unlockedBalance))
+                                )
+                                .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.blue)
+                            }
+                        }
 
-                        Text("Unlocked Balance")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        if viewModel.balanceIsStaleWhileSyncing {
+                            Label("Balance updating while sync catches up", systemImage: "clock.arrow.circlepath")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
 
-                        Text(
-                            viewModel.formatXMR(viewModel.piconeroToXMR(viewModel.unlockedBalance))
-                        )
-                        .font(.system(size: 24, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.blue)
+                        HStack(spacing: 12) {
+                            Button(action: {
+                                showSend = true
+                            }) {
+                                Label("Send", systemImage: "paperplane.fill")
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                    .background(Color.orange.opacity(0.9))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(12)
+                            }
+
+                            Button(action: {
+                                showReceive = true
+                            }) {
+                                Label("Receive", systemImage: "qrcode")
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                    .background(Color.green.opacity(0.9))
+                                    .foregroundColor(.white)
+                                    .cornerRadius(12)
+                            }
+                        }
                     }
                     .padding()
                     .frame(maxWidth: .infinity)
@@ -132,186 +183,159 @@ struct WalletView: View {
                     .cornerRadius(16)
                     .padding(.horizontal)
 
-                    // Address Card
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Wallet Address")
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Status")
                             .font(.headline)
 
-                        Text(viewModel.walletAddress)
-                            .font(.system(.caption, design: .monospaced))
-                            .padding()
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color(.systemGray6))
-                            .cornerRadius(8)
-                            .textSelection(.enabled)
-                    }
-                    .padding(.horizontal)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                Image(systemName: viewModel.isSynced ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
+                                    .foregroundColor(viewModel.isSynced ? .green : .orange)
+                                Text(syncHeadline())
+                                    .font(.headline)
+                            }
 
-                    // Status Info
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Sync Status")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundColor(.secondary)
+                            Text(syncDetail())
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
 
-                        VStack(alignment: .leading, spacing: 4) {
+                            ProgressView(value: viewModel.syncProgress)
+                                .progressViewStyle(LinearProgressViewStyle())
+
                             HStack {
-                                Text("Chain Height")
+                                Text("Node")
                                 Spacer()
-                                Text("\(viewModel.chainHeight)")
-                                    .font(.system(.body, design: .monospaced))
+                                Text(MoneroConfig.daemonAddress)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                             }
 
                             HStack {
-                                Text("Last Scanned")
+                                Text("Scanned")
                                 Spacer()
                                 Text("\(viewModel.lastScannedHeight)")
-                                    .font(.system(.body, design: .monospaced))
+                                    .font(.system(.caption, design: .monospaced))
+                            }
+
+                            HStack {
+                                Text("Network Height")
+                                Spacer()
+                                Text("\(viewModel.chainHeight)")
+                                    .font(.system(.caption, design: .monospaced))
                             }
 
                             if !viewModel.isSynced {
                                 HStack {
-                                    Text("Remaining Blocks")
+                                    Text("Remaining")
                                     Spacer()
-                                    Text("\(viewModel.remainingBlocks)")
-                                        .font(.system(.body, design: .monospaced))
+                                    Text("\(viewModel.remainingBlocks) blocks")
+                                        .font(.system(.caption, design: .monospaced))
                                 }
                             }
 
-                            HStack {
-                                Text("Target Height")
-                                Spacer()
-                                Text("\(viewModel.chainHeight)")
-                                    .font(.system(.body, design: .monospaced))
-                            }
-
-                            HStack {
-                                Text("Accounts (lookahead)")
-                                Spacer()
-                                Text("\(MoneroConfig.accountGap)")
-                                    .font(.system(.body, design: .monospaced))
-                            }
-
-                            HStack {
-                                Text("Gap limit")
-                                Spacer()
-                                Text("\(MoneroConfig.gapLimit)")
-                                    .font(.system(.body, design: .monospaced))
-                            }
-
-                            HStack {
-                                Text("Throughput")
-                                Spacer()
-                                Text(String(format: "%.1f blk/s", viewModel.scanBlocksPerSecond))
-                                    .font(.system(.body, design: .monospaced))
+                            if viewModel.scanBlocksPerSecond > 0 {
+                                HStack {
+                                    Text("Throughput")
+                                    Spacer()
+                                    Text(String(format: "%.1f blk/s", viewModel.scanBlocksPerSecond))
+                                        .font(.system(.caption, design: .monospaced))
+                                }
                             }
                         }
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
+                    .padding(.horizontal)
 
-                        VStack(alignment: .leading, spacing: 6) {
-                            ProgressView(value: viewModel.syncProgress)
-                                .progressViewStyle(LinearProgressViewStyle())
-                            Text(
-                                viewModel.isSynced
-                                    ? "Wallet is fully synced"
-                                    : ((viewModel.chainHeight == 0
-                                        || viewModel.lastScannedHeight == viewModel.restoreHeight)
-                                        ? "Initializing scan…"
-                                        : "Syncing… \(viewModel.remainingBlocks) blocks remaining")
-                            )
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        }
-
-                        // Transaction History (Transfers)
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Transactions")
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.secondary)
-
-                            if viewModel.transfers.isEmpty {
-                                Text("No transactions yet.")
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("Recent Transactions")
+                                .font(.headline)
+                            Spacer()
+                            if !viewModel.transfers.isEmpty {
+                                Text("\(viewModel.transfers.count)")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                            } else {
-                                VStack(spacing: 8) {
-                                    ForEach(sortedTransfers(viewModel.transfers), id: \.txid) { t in
-                                        Button {
-                                            selectedTransfer = t
-                                            showTransferDetails = true
-                                        } label: {
-                                            HStack(alignment: .top, spacing: 12) {
-                                                VStack(alignment: .leading, spacing: 4) {
-                                                    HStack(spacing: 6) {
-                                                        Text(directionLabel(t))
-                                                            .font(.caption)
-                                                            .foregroundColor(.secondary)
+                            }
+                        }
 
-                                                        if t.isPending {
-                                                            Text("Pending")
-                                                                .font(.caption)
-                                                                .foregroundColor(.secondary)
-                                                        } else if t.confirmations > 0 {
-                                                            Text("\(t.confirmations) conf")
-                                                                .font(.caption)
-                                                                .foregroundColor(.secondary)
-                                                        }
-                                                    }
+                        if viewModel.transfers.isEmpty {
+                            Text("No transactions yet.")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        } else {
+                            VStack(spacing: 0) {
+                                ForEach(sortedTransfers(viewModel.transfers), id: \.txid) { t in
+                                    Button {
+                                        selectedTransfer = t
+                                        showTransferDetails = true
+                                    } label: {
+                                        HStack(alignment: .top, spacing: 12) {
+                                            Image(systemName: t.direction.lowercased() == "in" ? "arrow.down.left.circle.fill" : "arrow.up.right.circle.fill")
+                                                .font(.title3)
+                                                .foregroundColor(amountColor(t))
 
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(directionLabel(t))
+                                                    .font(.subheadline)
+                                                    .fontWeight(.semibold)
+                                                    .foregroundColor(.primary)
+
+                                                HStack(spacing: 8) {
                                                     if let ts = formatTransferTimestamp(t) {
                                                         Text(ts)
-                                                            .font(.caption2)
+                                                            .font(.caption)
                                                             .foregroundColor(.secondary)
-                                                            .accessibilityLabel(
-                                                                formatTransferTimestampAbsolute(t)
-                                                                    ?? ts)
+                                                            .accessibilityLabel(formatTransferTimestampAbsolute(t) ?? ts)
                                                     }
-
-                                                    Text(t.txid)
-                                                        .font(
-                                                            .system(.caption2, design: .monospaced)
-                                                        )
+                                                    Text(t.isPending ? "Pending" : "\(t.confirmations) conf")
+                                                        .font(.caption)
                                                         .foregroundColor(.secondary)
-                                                        .lineLimit(1)
-                                                        .truncationMode(.middle)
-                                                        .textSelection(.enabled)
                                                 }
 
-                                                Spacer()
+                                                Text(t.txid)
+                                                    .font(.system(.caption2, design: .monospaced))
+                                                    .foregroundColor(.secondary)
+                                                    .lineLimit(1)
+                                                    .truncationMode(.middle)
+                                            }
 
-                                                VStack(alignment: .trailing, spacing: 4) {
-                                                    let amtXMR = viewModel.piconeroToXMR(t.amount)
-                                                    Text(viewModel.formatXMR(amtXMR))
-                                                        .font(
-                                                            .system(.caption, design: .monospaced)
-                                                        )
-                                                        .foregroundColor(amountColor(t))
+                                            Spacer()
 
-                                                    if let fee = t.fee {
-                                                        let feeXMR = viewModel.piconeroToXMR(fee)
-                                                        Text("Fee \(viewModel.formatXMR(feeXMR))")
-                                                            .font(
-                                                                .system(
-                                                                    .caption2, design: .monospaced)
-                                                            )
-                                                            .foregroundColor(.secondary)
-                                                    }
+                                            VStack(alignment: .trailing, spacing: 4) {
+                                                let amtXMR = viewModel.piconeroToXMR(t.amount)
+                                                Text(viewModel.formatXMR(amtXMR))
+                                                    .font(.system(.subheadline, design: .monospaced))
+                                                    .fontWeight(.semibold)
+                                                    .foregroundColor(amountColor(t))
+
+                                                if let fee = t.fee {
+                                                    let feeXMR = viewModel.piconeroToXMR(fee)
+                                                    Text("Fee \(viewModel.formatXMR(feeXMR))")
+                                                        .font(.caption2)
+                                                        .foregroundColor(.secondary)
                                                 }
                                             }
-                                            .padding(.vertical, 6)
                                         }
-                                        .buttonStyle(.plain)
+                                        .padding(.vertical, 12)
+                                    }
+                                    .buttonStyle(.plain)
 
+                                    if t.txid != sortedTransfers(viewModel.transfers).last?.txid {
                                         Divider()
                                     }
                                 }
-                                .sheet(
-                                    isPresented: $showTransferDetails,
-                                    onDismiss: { selectedTransfer = nil }
-                                ) {
-                                    if let t = selectedTransfer {
-                                        NavigationView {
-                                            List {
+                            }
+                            .sheet(
+                                isPresented: $showTransferDetails,
+                                onDismiss: { selectedTransfer = nil }
+                            ) {
+                                if let t = selectedTransfer {
+                                    NavigationView {
+                                        List {
                                                 Section(header: Text("Summary")) {
                                                     HStack {
                                                         Text("Type")
@@ -428,60 +452,17 @@ struct WalletView: View {
                                                     Button("Close") { showTransferDetails = false }
                                                 }
                                             }
-                                        }
                                     }
                                 }
                             }
                         }
-                        .padding(.top, 8)
-
-                        HStack {
-                            Text("Policy")
-                            Spacer()
-                            Text(
-                                MoneroConfig.networkPolicy == .clearnet
-                                    ? "Clearnet only"
-                                    : (MoneroConfig.networkPolicy == .i2p
-                                        ? "I2P only" : "Scan clearnet, broadcast I2P")
-                            )
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.secondary)
-                        }
-
-                        HStack {
-                            Text("Scan")
-                            Spacer()
-                            Text(MoneroConfig.scanNodeURL())
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
-
-                        HStack {
-                            Text("Broadcast")
-                            Spacer()
-                            Text(MoneroConfig.broadcastNodeURL())
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
-
-                        if MoneroConfig.networkPolicy == .i2p
-                            || MoneroConfig.networkPolicy == .hybrid,
-                            let proxy = MoneroConfig.i2pHTTPProxyAddress
-                        {
-                            HStack {
-                                Text("I2P Proxy")
-                                Spacer()
-                                Text(proxy)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
                     }
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
                     .padding(.horizontal)
 
-                    // Refresh / Cancel / Actions
                     HStack(spacing: 12) {
                         Button(action: {
                             Task {
@@ -516,34 +497,6 @@ struct WalletView: View {
                                 .frame(maxWidth: .infinity)
                                 .padding()
                                 .background(Color.red.opacity(0.9))
-                                .foregroundColor(.white)
-                                .cornerRadius(12)
-                            }
-                        } else {
-                            Button(action: {
-                                showSend = true
-                            }) {
-                                HStack {
-                                    Image(systemName: "paperplane.fill")
-                                    Text("Send")
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.orange.opacity(0.9))
-                                .foregroundColor(.white)
-                                .cornerRadius(12)
-                            }
-
-                            Button(action: {
-                                showReceive = true
-                            }) {
-                                HStack {
-                                    Image(systemName: "qrcode")
-                                    Text("Receive")
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.green.opacity(0.9))
                                 .foregroundColor(.white)
                                 .cornerRadius(12)
                             }

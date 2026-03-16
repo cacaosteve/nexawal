@@ -68,25 +68,6 @@ struct SendView: View {
                         .font(.system(.body, design: .monospaced))
                 }
 
-                Section(header: Text("From")) {
-                    Toggle("Send from specific subaddress", isOn: $sendFromSubaddressEnabled)
-
-                    if sendFromSubaddressEnabled {
-                        Picker("Subaddress", selection: $fromSubaddressMinor) {
-                            ForEach(viewModel.receiveSubaddresses, id: \.subaddressIndex) { e in
-                                let label = e.label.trimmingCharacters(in: .whitespacesAndNewlines)
-                                let title = label.isEmpty ? "Subaddress \(e.subaddressIndex)" : label
-                                Text(title).tag(e.subaddressIndex)
-                            }
-                        }
-                        .pickerStyle(.menu)
-
-                        Text("Note: This constrains inputs to account 0, subaddress \(fromSubaddressMinor).")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
                 Section(header: Text("Amount")) {
                     HStack {
                         TextField("0.0", text: $amountXMR)
@@ -116,39 +97,8 @@ struct SendView: View {
                     }
                 }
 
-                Section(header: Text("Network Policy")) {
-                    HStack {
-                        Text("Policy")
-                        Spacer()
-                        Text(policyText())
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("Broadcast")
-                        Spacer()
-                        Text(MoneroConfig.broadcastNodeURL())
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.secondary)
-                    }
-
-                    if (MoneroConfig.networkPolicy == .i2p || MoneroConfig.networkPolicy == .hybrid),
-                       let proxy = MoneroConfig.i2pHTTPProxyAddress,
-                       !proxy.isEmpty
-                    {
-                        HStack {
-                            Text("I2P Proxy")
-                            Spacer()
-                            Text(proxy)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
                 if let fee = estimatedFeePiconero {
-                    Section(header: Text("Fee Estimate")) {
+                    Section(header: Text("Confirm")) {
                         HStack {
                             Text("Estimated fee")
                             Spacer()
@@ -163,6 +113,15 @@ struct SendView: View {
                                 Text(viewModel.formatXMR(viewModel.piconeroToXMR(total)))
                                     .font(.system(.caption, design: .monospaced))
                             }
+                        }
+
+                        HStack {
+                            Text("Destination")
+                            Spacer()
+                            Text(toAddress)
+                                .font(.system(.caption2, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                         }
                     }
                 }
@@ -200,9 +159,7 @@ struct SendView: View {
                     }
                 }
 
-                Section {
-                    // Keep Preview Fee and Send in the same row, but move Send Max out of the row to
-                    // reduce accidental taps from scrolling/overlapping hit targets.
+                Section(header: Text("Actions")) {
                     HStack(spacing: 12) {
                         Button {
                             Task { await estimateFee() }
@@ -251,6 +208,56 @@ struct SendView: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(isEstimating || isSending)
+                }
+
+                Section {
+                    DisclosureGroup("Advanced") {
+                        Toggle("Send from specific subaddress", isOn: $sendFromSubaddressEnabled)
+
+                        if sendFromSubaddressEnabled {
+                            Picker("Subaddress", selection: $fromSubaddressMinor) {
+                                ForEach(viewModel.receiveSubaddresses, id: \.subaddressIndex) { e in
+                                    let label = e.label.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    let title = label.isEmpty ? "Subaddress \(e.subaddressIndex)" : label
+                                    Text(title).tag(e.subaddressIndex)
+                                }
+                            }
+                            .pickerStyle(.menu)
+
+                            Text("This constrains inputs to account 0, subaddress \(fromSubaddressMinor).")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        HStack {
+                            Text("Policy")
+                            Spacer()
+                            Text(policyText())
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+
+                        HStack {
+                            Text("Broadcast")
+                            Spacer()
+                            Text(MoneroConfig.broadcastNodeURL())
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+
+                        if (MoneroConfig.networkPolicy == .i2p || MoneroConfig.networkPolicy == .hybrid),
+                           let proxy = MoneroConfig.i2pHTTPProxyAddress,
+                           !proxy.isEmpty
+                        {
+                            HStack {
+                                Text("I2P Proxy")
+                                Spacer()
+                                Text(proxy)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
                 }
             }
             .navigationTitle("Send XMR")

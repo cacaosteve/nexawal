@@ -59,6 +59,8 @@ class WalletViewModel: ObservableObject {
     private var isManualRescanInProgress: Bool = false
     private var lastPollingStatus: (chainHeight: UInt64, lastScanned: UInt64)?
     private var lastPollingUpdate: Date?
+    private var scanRateWindowStart: Date?
+    private var scanRateWindowScanned: UInt64?
     private var pendingSyncPollRestart: Bool = false
     private let pollingStagnationInterval: TimeInterval = 5.0
     private var needsRefreshRetryOnNextActive: Bool = false
@@ -656,6 +658,8 @@ class WalletViewModel: ObservableObject {
         pendingSyncPollRestart = false
         lastPollingStatus = (chainHeight: chainHeight, lastScanned: lastScannedHeight)
         lastPollingUpdate = Date()
+        scanRateWindowStart = nil
+        scanRateWindowScanned = nil
         lastBalancePollAt = nil
         lastTransfersPollAt = nil
         syncStatusPollTask = Task { [weak self] in
@@ -675,13 +679,31 @@ class WalletViewModel: ObservableObject {
                             let prevUpdate = self.lastPollingUpdate
                             if let prev = prev, let lastUpdate = prevUpdate {
                                 let dt = now.timeIntervalSince(lastUpdate)
-                                if dt > 0 {
-                                    let db = Double(status.lastScanned) - Double(prev.lastScanned)
-                                    if db <= 0 {
-                                        self.scanBlocksPerSecond = 0.0
-                                    } else {
-                                        self.scanBlocksPerSecond = db / dt
+                                let db = status.lastScanned >= prev.lastScanned ? (status.lastScanned - prev.lastScanned) : 0
+
+                                if db > 0, dt >= 0.5 {
+                                    if self.scanRateWindowStart == nil || self.scanRateWindowScanned == nil {
+                                        self.scanRateWindowStart = lastUpdate
+                                        self.scanRateWindowScanned = prev.lastScanned
                                     }
+
+                                    if let windowStart = self.scanRateWindowStart,
+                                       let windowScanned = self.scanRateWindowScanned {
+                                        let windowDt = now.timeIntervalSince(windowStart)
+                                        let windowDb = status.lastScanned >= windowScanned ? (status.lastScanned - windowScanned) : 0
+
+                                        if windowDb >= 10, windowDt >= 2.0 {
+                                            self.scanBlocksPerSecond = Double(windowDb) / windowDt
+                                        } else if windowDt >= 8.0 {
+                                            self.scanBlocksPerSecond = Double(windowDb) / windowDt
+                                        } else {
+                                            self.scanBlocksPerSecond = 0.0
+                                        }
+                                    } else {
+                                        self.scanBlocksPerSecond = 0.0
+                                    }
+                                } else if db == 0 {
+                                    self.scanBlocksPerSecond = 0.0
                                 } else {
                                     self.scanBlocksPerSecond = 0.0
                                 }
