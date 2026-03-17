@@ -17,6 +17,7 @@ struct SendView: View {
     @State private var previewReady: Bool = false
     @State private var errorMessage: String?
     @State private var infoMessage: String?
+    @State private var showSendConfirmation: Bool = false
 
     // Subaddress send selection (account 0 only for MVP)
     @State private var fromSubaddressMinor: UInt32 = 0
@@ -179,7 +180,7 @@ struct SendView: View {
                         .disabled(isEstimating || isSending || parsedAmountPiconero() == nil || !looksLikeAddress(toAddress))
 
                         Button {
-                            Task { await performSend() }
+                            showSendConfirmation = true
                         } label: {
                             HStack {
                                 if isSending {
@@ -286,6 +287,21 @@ struct SendView: View {
         }
         .onChange(of: fromSubaddressMinor) {
             Task { await refreshSubaddressBalanceIfNeeded() }
+        }
+        .confirmationDialog(
+            "Confirm Send",
+            isPresented: $showSendConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Confirm Send") {
+                Task {
+                    await performSend()
+                }
+            }
+            Button("Cancel", role: .cancel) {
+            }
+        } message: {
+            Text(confirmationMessage())
         }
     }
 
@@ -530,9 +546,17 @@ struct SendView: View {
         return overflow ? UInt64.max : prod
     }
 
+    private func confirmationMessage() -> String {
+        let destination = toAddress.isEmpty ? "Unknown address" : toAddress
+        if let fee = estimatedFeePiconero, let amount = parsedAmountPiconero() {
+            let total = safeAdd(amount, fee)
+            return "Send \(viewModel.formatXMR(viewModel.piconeroToXMR(amount))) to \(destination).\nFee: \(viewModel.formatXMR(viewModel.piconeroToXMR(fee)))\nTotal: \(viewModel.formatXMR(viewModel.piconeroToXMR(total)))"
+        }
+        return "Preview the fee before sending to \(destination)."
+    }
+
     // One-shot "Send Max": ask the core to compute the maximum sendable amount (unlocked - fee),
-    // then fill the amount field. IMPORTANT: do NOT enter a sticky "sweep mode".
-    // The user can still hit "Send" and it will behave like a normal exact-amount send.
+    // then fill the amount field so the confirmation dialog can use a previewed amount.
     private func sendMax() async {
         print("🧭 UI action: sendMax tapped wallet_id=\(walletManager.getCurrentWalletId() ?? "(none)") isMaxMode=\(isMaxMode) sendFromSubaddressEnabled=\(sendFromSubaddressEnabled) fromSubaddressMinor=\(fromSubaddressMinor) amountXMR_before=\(amountXMR) toAddress_prefix=\(String(toAddress.prefix(12)))")
 
