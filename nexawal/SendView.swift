@@ -18,6 +18,7 @@ struct SendView: View {
     @State private var errorMessage: String?
     @State private var infoMessage: String?
     @State private var showSendConfirmation: Bool = false
+    @State private var showScanner: Bool = false
 
     // Subaddress send selection (account 0 only for MVP)
     @State private var fromSubaddressMinor: UInt32 = 0
@@ -265,6 +266,18 @@ struct SendView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showScanner = true
+                    } label: {
+                        Image(systemName: "qrcode.viewfinder")
+                    }
+                }
+            }
+            .fullScreenCover(isPresented: $showScanner) {
+                QRScannerView { code in
+                    handleScannedCode(code)
                 }
             }
         }
@@ -544,6 +557,54 @@ struct SendView: View {
     private func safeMul(_ a: UInt64, _ b: UInt64) -> UInt64 {
         let (prod, overflow) = a.multipliedReportingOverflow(by: b)
         return overflow ? UInt64.max : prod
+    }
+    
+    private func handleScannedCode(_ code: String) {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if trimmed.lowercased().hasPrefix("monero:") {
+            parseMoneroUri(trimmed)
+        } else if looksLikeAddress(trimmed) {
+            toAddress = trimmed
+            infoMessage = "Address loaded from QR code."
+        } else {
+            errorMessage = "Invalid QR code. Expected Monero address or payment URI."
+        }
+        
+        estimatedFeePiconero = nil
+        previewReady = false
+    }
+    
+    private func parseMoneroUri(_ uri: String) {
+        guard let url = URL(string: uri) else {
+            errorMessage = "Invalid payment URI format."
+            return
+        }
+        
+        guard let host = url.host, looksLikeAddress(host) else {
+            errorMessage = "No valid address in payment URI."
+            return
+        }
+        
+        toAddress = host
+        
+        if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let queryItems = components.queryItems {
+            for item in queryItems {
+                if item.name == "amount" || item.name == "tx_amount" {
+                    if let value = item.value {
+                        if let xmr = Double(value) {
+                            amountXMR = String(format: "%.12f", xmr)
+                        } else if let pico = Double(value), pico > 1e12 {
+                            let xmr = pico / 1e12
+                            amountXMR = String(format: "%.12f", xmr)
+                        }
+                    }
+                }
+            }
+        }
+        
+        infoMessage = "Payment details loaded from QR code."
     }
 
     private func confirmationMessage() -> String {

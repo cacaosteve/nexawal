@@ -101,7 +101,7 @@
 			mainGroup = AAABE4452EDEBF11004D56AB;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				AAC2C8C22F0E21BC0080C162 /* XCLocalSwiftPackageReference "../MoneroWalletCoreFFI" */,
+				AAC2C8C22F0E21BC0080C162 /* XCRemoteSwiftPackageReference "WalletCoreFFI" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AAABE44F2EDEBF11004D56AB /* Products */;
@@ -264,6 +264,7 @@
 				DEVELOPMENT_TEAM = AD7493G5S3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "NexaWal needs camera access to scan QR codes for sending Monero.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "You can use Face ID to secure your wallet.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -297,6 +298,7 @@
 				DEVELOPMENT_TEAM = AD7493G5S3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "NexaWal needs camera access to scan QR codes for sending Monero.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "You can use Face ID to secure your wallet.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -343,16 +345,21 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		AAC2C8C22F0E21BC0080C162 /* XCLocalSwiftPackageReference "../MoneroWalletCoreFFI" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../MoneroWalletCoreFFI;
+/* Begin XCRemoteSwiftPackageReference section */
+		AAC2C8C22F0E21BC0080C162 /* XCRemoteSwiftPackageReference "WalletCoreFFI" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/cacaosteve/WalletCoreFFI";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
 		};
-/* End XCLocalSwiftPackageReference section */
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		AAC2C8C32F0E21BC0080C162 /* MoneroWalletCoreFFI */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = AAC2C8C22F0E21BC0080C162 /* XCRemoteSwiftPackageReference "WalletCoreFFI" */;
 			productName = MoneroWalletCoreFFI;
 		};
 /* End XCSwiftPackageProductDependency section */
