@@ -101,7 +101,7 @@
 			mainGroup = AAABE4452EDEBF11004D56AB;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				AAC2C8C22F0E21BC0080C162 /* XCRemoteSwiftPackageReference "WalletCoreFFI" */,
+				AAC2C8C22F0E21BC0080C162 /* XCRemoteSwiftPackageReference "MoneroWalletCoreFFI" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AAABE44F2EDEBF11004D56AB /* Products */;
@@ -346,9 +346,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		AAC2C8C22F0E21BC0080C162 /* XCRemoteSwiftPackageReference "WalletCoreFFI" */ = {
+		AAC2C8C22F0E21BC0080C162 /* XCRemoteSwiftPackageReference "MoneroWalletCoreFFI" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/cacaosteve/WalletCoreFFI";
+			repositoryURL = "https://github.com/cacaosteve/MoneroWalletCoreFFI";
 			requirement = {
 				branch = main;
 				kind = branch;
@@ -359,7 +359,7 @@
 /* Begin XCSwiftPackageProductDependency section */
 		AAC2C8C32F0E21BC0080C162 /* MoneroWalletCoreFFI */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = AAC2C8C22F0E21BC0080C162 /* XCRemoteSwiftPackageReference "WalletCoreFFI" */;
+			package = AAC2C8C22F0E21BC0080C162 /* XCRemoteSwiftPackageReference "MoneroWalletCoreFFI" */;
 			productName = MoneroWalletCoreFFI;
 		};
 /* End XCSwiftPackageProductDependency section */

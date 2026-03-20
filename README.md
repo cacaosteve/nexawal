@@ -4,7 +4,7 @@
 
 - iOS app: this repository
 - Android app: [nexawal-android](https://github.com/cacaosteve/nexawal-android)
-- Rust wallet core / Swift package: [WalletCoreFFI](https://github.com/cacaosteve/WalletCoreFFI)
+- Rust wallet core / Swift package: [MoneroWalletCoreFFI](https://github.com/cacaosteve/MoneroWalletCoreFFI)
 - Monero library work: [monero-oxide](https://github.com/cacaosteve/monero-oxide)
 
 ## Screenshots
