@@ -630,7 +630,7 @@ struct SendView: View {
     
     private func handleScannedCode(_ code: String) {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        
+
         if trimmed.lowercased().hasPrefix("monero:") {
             parseMoneroUri(trimmed)
         } else if looksLikeAddress(trimmed) {
@@ -639,40 +639,61 @@ struct SendView: View {
         } else {
             errorMessage = "Invalid QR code. Expected Monero address or payment URI."
         }
-        
+
         estimatedFeePiconero = nil
         previewReady = false
     }
-    
+
+    /// Parse `monero:<address>?…` and `monero://<address>?…` without lowercasing Base58.
     private func parseMoneroUri(_ uri: String) {
-        guard let url = URL(string: uri) else {
+        let trimmed = uri.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.lowercased().hasPrefix("monero:") else {
             errorMessage = "Invalid payment URI format."
             return
         }
-        
-        guard let host = url.host, looksLikeAddress(host) else {
+
+        var remainder = String(trimmed.dropFirst("monero:".count))
+        if remainder.hasPrefix("//") {
+            remainder = String(remainder.dropFirst(2))
+        }
+
+        let addressCandidate: String
+        let queryString: String?
+        if let q = remainder.firstIndex(of: "?") {
+            addressCandidate = String(remainder[..<q])
+            queryString = String(remainder[remainder.index(after: q)...])
+        } else {
+            addressCandidate = remainder
+            queryString = nil
+        }
+
+        // Strip any accidental path slashes; keep Base58 case intact.
+        let address = addressCandidate
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard looksLikeAddress(address) else {
             errorMessage = "No valid address in payment URI."
             return
         }
-        
-        toAddress = host
-        
-        if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-           let queryItems = components.queryItems {
-            for item in queryItems {
-                if item.name == "amount" || item.name == "tx_amount" {
-                    if let value = item.value {
-                        if let xmr = Double(value) {
-                            amountXMR = String(format: "%.12f", xmr)
-                        } else if let pico = Double(value), pico > 1e12 {
-                            let xmr = pico / 1e12
-                            amountXMR = String(format: "%.12f", xmr)
-                        }
+
+        toAddress = address
+
+        if let queryString, !queryString.isEmpty {
+            for pair in queryString.split(separator: "&") {
+                let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard let rawName = parts.first.map(String.init) else { continue }
+                let name = rawName.lowercased()
+                let value = parts.count > 1 ? String(parts[1]).removingPercentEncoding ?? String(parts[1]) : ""
+
+                if name == "amount" || name == "tx_amount", !value.isEmpty {
+                    if let xmr = Double(value) {
+                        amountXMR = String(format: "%.12f", xmr)
                     }
                 }
             }
         }
-        
+
         infoMessage = "Payment details loaded from QR code."
     }
 
