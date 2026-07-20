@@ -186,6 +186,9 @@ actor WalletManager {
                         MoneroConfig.setScanParallelism(0)
                         MoneroConfig.setScanBatchSize(150)
                     }
+                    refreshPar = 0
+                    refreshBatch = 150
+                    applyBulkRangeBatchEnv(batch: refreshBatch)
                     print("↩️ Parallel stall detected; falling back to sequential scan (par=0, batch=150) and retrying on same node...")
                     let seqStatus = try await performRefresh(walletId: walletId, nodeURL: nodeURL)
                     exportCacheAndPersist(for: walletId)
@@ -319,7 +322,7 @@ actor WalletManager {
         // Base on user-provided stallTimeout, but expand for larger batches and parallelism
         var dynamicStallTimeout = max(
             stallTimeout,
-            min(300.0, max(45.0, (par > 0 ? Double(batch) * 0.15 : Double(batch) * 0.08)))
+            min(300.0, max(60.0, (par > 0 ? Double(batch) * 0.15 : Double(batch) * 0.25)))
         )
 
         // If the UI requested cancel, exit early.
@@ -408,6 +411,7 @@ actor WalletManager {
                 refreshBatch = 150
                 await MoneroConfig.setScanParallelism(0)
                 await MoneroConfig.setScanBatchSize(150)
+                applyBulkRangeBatchEnv(batch: refreshBatch)
                 // Restart background refresh with safer tuning
                 let effectiveURL = MoneroConfig.scanNodeURL()
                 print("🌐 Stall fallback restart using nodeURL=\(effectiveURL)")
@@ -611,21 +615,28 @@ actor WalletManager {
 
     /// Apply scan tuning (parallelism and batch) via environment variables
     private func applyScanTuning() {
-        // Feather-like baseline: let core defaults drive bulk/par/batch; keep scan logging on.
+        // Match the Android fast-sync path: force range-based bulk fetch with large
+        // batches to amortize per-RPC latency while keeping native scan logs enabled on iOS.
         refreshPar = 0
-        refreshBatch = 0
+        refreshBatch = 500
 
         unsetenv("WALLETCORE_SCAN_PAR")
         unsetenv("WALLETCORE_SCAN_BATCH")
         unsetenv("WALLETCORE_BULK_FETCH")
-        unsetenv("WALLETCORE_BULK_MODE")
-        unsetenv("WALLETCORE_BULK_FETCH_BATCH")
         unsetenv("WALLETCORE_WALLET2_FAST_FALLBACK")
         unsetenv("WALLETCORE_BULK_BIN_DEBUG")
+        applyBulkRangeBatchEnv(batch: refreshBatch)
         setenv("WALLETCORE_SCAN_LOG", "1", 1)
 
         let node = MoneroConfig.scanNodeURL()
-        print("🧪 scan tuning feather-baseline: node=\(node) scan_log=1 (env bulk/par/batch unset)")
+        print("🧪 scan tuning fast-sync: node=\(node) bulk_mode=range bulk_fetch_batch=\(refreshBatch) upstream_block_batch=\(refreshBatch) scan_log=1")
+    }
+
+    private func applyBulkRangeBatchEnv(batch: Int) {
+        setenv("WALLETCORE_BULK_MODE", "range", 1)
+        setenv("WALLETCORE_BULK_FETCH_BATCH", "\(batch)", 1)
+        setenv("WALLETCORE_UPSTREAM_BLOCK_BATCH", "\(batch)", 1)
+        print("🧪 scan tuning batch env: bulk_mode=range bulk_fetch_batch=\(batch) upstream_block_batch=\(batch)")
     }
 
     // NOTE: Removed the reason-tagging wrapper to avoid recursive overload confusion.
@@ -679,11 +690,11 @@ actor WalletManager {
         let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
         let fee: UInt64
         do {
-            fee = try WalletCoreFFIClient.previewFee(
+            fee = try previewFeeWithOptionalSiblingFallback(
                 walletId: walletId,
-                destinations: [dest],
+                nodeURL: endpoint,
                 ringLen: ringLen,
-                nodeURL: endpoint
+                destinations: [dest]
             )
         } catch {
             let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
@@ -718,12 +729,12 @@ actor WalletManager {
         let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
         let fee: UInt64
         do {
-            fee = try WalletCoreFFIClient.previewFeeWithFilter(
+            fee = try previewFeeWithFilterOptionalSiblingFallback(
                 walletId: walletId,
-                destinations: [dest],
-                filter: filterForSubaddressMinor(fromSubaddressMinor),
+                nodeURL: endpoint,
                 ringLen: ringLen,
-                nodeURL: endpoint
+                destinations: [dest],
+                filter: filterForSubaddressMinor(fromSubaddressMinor)
             )
         } catch {
             let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
@@ -750,12 +761,12 @@ actor WalletManager {
 
         let endpoint = MoneroConfig.broadcastNodeURL()
         do {
-            let res = try WalletCoreFFIClient.previewSweepWithFilter(
+            let res = try previewSweepWithFilterOptionalSiblingFallback(
                 walletId: walletId,
-                toAddress: toAddress,
-                filter: filterForSubaddressMinor(fromSubaddressMinor),
+                nodeURL: endpoint,
                 ringLen: ringLen,
-                nodeURL: endpoint
+                toAddress: toAddress,
+                filter: filterForSubaddressMinor(fromSubaddressMinor)
             )
             return res
         } catch {
@@ -778,12 +789,12 @@ actor WalletManager {
 
         let endpoint = MoneroConfig.broadcastNodeURL()
         do {
-            return try WalletCoreFFIClient.sweepWithFilter(
+            return try sweepWithFilterOptionalSiblingFallback(
                 walletId: walletId,
-                toAddress: toAddress,
-                filter: filterForSubaddressMinor(fromSubaddressMinor),
+                nodeURL: endpoint,
                 ringLen: ringLen,
-                nodeURL: endpoint
+                toAddress: toAddress,
+                filter: filterForSubaddressMinor(fromSubaddressMinor)
             )
         } catch {
             let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
@@ -807,12 +818,12 @@ actor WalletManager {
         let endpoint = MoneroConfig.broadcastNodeURL()
         let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
         do {
-            return try WalletCoreFFIClient.sendWithFilter(
+            return try sendWithFilterOptionalSiblingFallback(
                 walletId: walletId,
-                destinations: [dest],
-                filter: filterForSubaddressMinor(fromSubaddressMinor),
+                nodeURL: endpoint,
                 ringLen: ringLen,
-                nodeURL: endpoint
+                destinations: [dest],
+                filter: filterForSubaddressMinor(fromSubaddressMinor)
             )
         } catch {
             let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
@@ -842,11 +853,11 @@ actor WalletManager {
 
         let res: (amount: UInt64, fee: UInt64)
         do {
-            res = try WalletCoreFFIClient.previewSweep(
+            res = try previewSweepOptionalSiblingFallback(
                 walletId: walletId,
-                toAddress: toAddress,
+                nodeURL: endpoint,
                 ringLen: ringLen,
-                nodeURL: endpoint
+                toAddress: toAddress
             )
         } catch {
             let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
@@ -881,11 +892,11 @@ actor WalletManager {
 
         let res: (txid: String, amount: UInt64, fee: UInt64)
         do {
-            res = try WalletCoreFFIClient.sweep(
+            res = try sweepOptionalSiblingFallback(
                 walletId: walletId,
-                toAddress: toAddress,
+                nodeURL: endpoint,
                 ringLen: ringLen,
-                nodeURL: endpoint
+                toAddress: toAddress
             )
         } catch {
             let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
@@ -926,12 +937,12 @@ actor WalletManager {
 
         let result: (txid: String, fee: UInt64)
         do {
-            result = try WalletCoreFFIClient.send(
+            result = try sendOptionalSiblingFallback(
                 walletId: walletId,
-                toAddress: toAddress,
-                amountPiconero: amountPiconero,
+                nodeURL: endpoint,
                 ringLen: ringLen,
-                nodeURL: endpoint
+                toAddress: toAddress,
+                amountPiconero: amountPiconero
             )
         } catch {
             let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
@@ -965,6 +976,279 @@ actor WalletManager {
             unsetenv("http_proxy")
             unsetenv("ALL_PROXY")
             unsetenv("all_proxy")
+        }
+    }
+
+    private func siblingMonerodURLIfNeeded(for endpoint: String) -> String? {
+        guard var components = URLComponents(string: endpoint),
+              components.port == 18092 else {
+            return nil
+        }
+
+        components.port = 18081
+        return components.url?.absoluteString
+    }
+
+    private func isFeeRateFailure(_ text: String) -> Bool {
+        let normalized = text.lowercased()
+        return normalized.contains("fee_rate failed") || normalized.contains("fee_rate_failed")
+    }
+
+    private func shouldRetryViaSiblingMonerod(error: Error, coreMessage: String, endpoint: String) -> String? {
+        guard let fallbackURL = siblingMonerodURLIfNeeded(for: endpoint) else {
+            return nil
+        }
+
+        if isFeeRateFailure(error.localizedDescription) || isFeeRateFailure(coreMessage) {
+            return fallbackURL
+        }
+        return nil
+    }
+
+    private func previewFeeWithOptionalSiblingFallback(
+        walletId: String,
+        nodeURL: String,
+        ringLen: UInt8,
+        destinations: [WalletCoreFFIClient.Destination]
+    ) throws -> UInt64 {
+        do {
+            return try WalletCoreFFIClient.previewFee(
+                walletId: walletId,
+                destinations: destinations,
+                ringLen: ringLen,
+                nodeURL: nodeURL
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
+            guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
+                throw error
+            }
+
+            print("↩️ Preview fee retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            return try WalletCoreFFIClient.previewFee(
+                walletId: walletId,
+                destinations: destinations,
+                ringLen: ringLen,
+                nodeURL: fallbackURL
+            )
+        }
+    }
+
+    private func previewFeeWithFilterOptionalSiblingFallback(
+        walletId: String,
+        nodeURL: String,
+        ringLen: UInt8,
+        destinations: [WalletCoreFFIClient.Destination],
+        filter: [String: Any]
+    ) throws -> UInt64 {
+        do {
+            return try WalletCoreFFIClient.previewFeeWithFilter(
+                walletId: walletId,
+                destinations: destinations,
+                filter: filter,
+                ringLen: ringLen,
+                nodeURL: nodeURL
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
+            guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
+                throw error
+            }
+
+            print("↩️ Preview fee (filtered) retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            return try WalletCoreFFIClient.previewFeeWithFilter(
+                walletId: walletId,
+                destinations: destinations,
+                filter: filter,
+                ringLen: ringLen,
+                nodeURL: fallbackURL
+            )
+        }
+    }
+
+    private func previewSweepOptionalSiblingFallback(
+        walletId: String,
+        nodeURL: String,
+        ringLen: UInt8,
+        toAddress: String
+    ) throws -> (amount: UInt64, fee: UInt64) {
+        do {
+            return try WalletCoreFFIClient.previewSweep(
+                walletId: walletId,
+                toAddress: toAddress,
+                ringLen: ringLen,
+                nodeURL: nodeURL
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
+            guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
+                throw error
+            }
+
+            print("↩️ Sweep preview retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            return try WalletCoreFFIClient.previewSweep(
+                walletId: walletId,
+                toAddress: toAddress,
+                ringLen: ringLen,
+                nodeURL: fallbackURL
+            )
+        }
+    }
+
+    private func previewSweepWithFilterOptionalSiblingFallback(
+        walletId: String,
+        nodeURL: String,
+        ringLen: UInt8,
+        toAddress: String,
+        filter: [String: Any]
+    ) throws -> (amount: UInt64, fee: UInt64) {
+        do {
+            return try WalletCoreFFIClient.previewSweepWithFilter(
+                walletId: walletId,
+                toAddress: toAddress,
+                filter: filter,
+                ringLen: ringLen,
+                nodeURL: nodeURL
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
+            guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
+                throw error
+            }
+
+            print("↩️ Sweep preview (filtered) retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            return try WalletCoreFFIClient.previewSweepWithFilter(
+                walletId: walletId,
+                toAddress: toAddress,
+                filter: filter,
+                ringLen: ringLen,
+                nodeURL: fallbackURL
+            )
+        }
+    }
+
+    private func sendOptionalSiblingFallback(
+        walletId: String,
+        nodeURL: String,
+        ringLen: UInt8,
+        toAddress: String,
+        amountPiconero: UInt64
+    ) throws -> (txid: String, fee: UInt64) {
+        do {
+            return try WalletCoreFFIClient.send(
+                walletId: walletId,
+                toAddress: toAddress,
+                amountPiconero: amountPiconero,
+                ringLen: ringLen,
+                nodeURL: nodeURL
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
+            guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
+                throw error
+            }
+
+            print("↩️ Send retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            return try WalletCoreFFIClient.send(
+                walletId: walletId,
+                toAddress: toAddress,
+                amountPiconero: amountPiconero,
+                ringLen: ringLen,
+                nodeURL: fallbackURL
+            )
+        }
+    }
+
+    private func sendWithFilterOptionalSiblingFallback(
+        walletId: String,
+        nodeURL: String,
+        ringLen: UInt8,
+        destinations: [WalletCoreFFIClient.Destination],
+        filter: [String: Any]
+    ) throws -> (txid: String, fee: UInt64) {
+        do {
+            return try WalletCoreFFIClient.sendWithFilter(
+                walletId: walletId,
+                destinations: destinations,
+                filter: filter,
+                ringLen: ringLen,
+                nodeURL: nodeURL
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
+            guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
+                throw error
+            }
+
+            print("↩️ Send (filtered) retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            return try WalletCoreFFIClient.sendWithFilter(
+                walletId: walletId,
+                destinations: destinations,
+                filter: filter,
+                ringLen: ringLen,
+                nodeURL: fallbackURL
+            )
+        }
+    }
+
+    private func sweepOptionalSiblingFallback(
+        walletId: String,
+        nodeURL: String,
+        ringLen: UInt8,
+        toAddress: String
+    ) throws -> (txid: String, amount: UInt64, fee: UInt64) {
+        do {
+            return try WalletCoreFFIClient.sweep(
+                walletId: walletId,
+                toAddress: toAddress,
+                ringLen: ringLen,
+                nodeURL: nodeURL
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
+            guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
+                throw error
+            }
+
+            print("↩️ Sweep retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            return try WalletCoreFFIClient.sweep(
+                walletId: walletId,
+                toAddress: toAddress,
+                ringLen: ringLen,
+                nodeURL: fallbackURL
+            )
+        }
+    }
+
+    private func sweepWithFilterOptionalSiblingFallback(
+        walletId: String,
+        nodeURL: String,
+        ringLen: UInt8,
+        toAddress: String,
+        filter: [String: Any]
+    ) throws -> (txid: String, amount: UInt64, fee: UInt64) {
+        do {
+            return try WalletCoreFFIClient.sweepWithFilter(
+                walletId: walletId,
+                toAddress: toAddress,
+                filter: filter,
+                ringLen: ringLen,
+                nodeURL: nodeURL
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
+            guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
+                throw error
+            }
+
+            print("↩️ Sweep (filtered) retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            return try WalletCoreFFIClient.sweepWithFilter(
+                walletId: walletId,
+                toAddress: toAddress,
+                filter: filter,
+                ringLen: ringLen,
+                nodeURL: fallbackURL
+            )
         }
     }
 }

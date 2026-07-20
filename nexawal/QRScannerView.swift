@@ -3,15 +3,19 @@ import AVFoundation
 
 struct QRScannerView: UIViewControllerRepresentable {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.classicUI) private var classicUI
     let onScan: (String) -> Void
     
     func makeUIViewController(context: Context) -> QRScannerViewController {
         let controller = QRScannerViewController()
         controller.delegate = context.coordinator
+        controller.neonMode = classicUI
         return controller
     }
     
-    func updateUIViewController(_ uiViewController: QRScannerViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: QRScannerViewController, context: Context) {
+        uiViewController.neonMode = classicUI
+    }
     
     func makeCoordinator() -> Coordinator {
         Coordinator(onScan: onScan, dismiss: dismiss)
@@ -39,6 +43,7 @@ protocol QRScannerViewControllerDelegate: AnyObject {
 
 class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
     weak var delegate: QRScannerViewControllerDelegate?
+    var neonMode: Bool = false
     
     private var captureSession: AVCaptureSession?
     private var previewLayer: AVCaptureVideoPreviewLayer?
@@ -154,24 +159,58 @@ class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsD
         
         let borderLayer = CAShapeLayer()
         borderLayer.path = scanPath.cgPath
-        borderLayer.strokeColor = UIColor.white.cgColor
+        let neonGreen = UIColor(red: 0.224, green: 1.0, blue: 0.078, alpha: 1.0) // #39FF14
+        borderLayer.strokeColor = (neonMode ? neonGreen : .white).cgColor
         borderLayer.fillColor = UIColor.clear.cgColor
         borderLayer.lineWidth = 3
         overlayView.layer.addSublayer(borderLayer)
         
         let instructionLabel = UILabel()
-        instructionLabel.text = "Scan Monero QR code"
-        instructionLabel.textColor = .white
-        instructionLabel.font = .systemFont(ofSize: 17, weight: .medium)
+        instructionLabel.text = neonMode ? "SCAN MONERO QR" : "Scan Monero QR code"
+        instructionLabel.textColor = neonMode ? neonGreen : .white
+        instructionLabel.font = neonMode
+            ? .monospacedSystemFont(ofSize: 17, weight: .bold)
+            : .systemFont(ofSize: 17, weight: .medium)
         instructionLabel.textAlignment = .center
         instructionLabel.frame = CGRect(x: 0, y: scanArea.maxY + 24, width: view.bounds.width, height: 24)
         overlayView.addSubview(instructionLabel)
+
+        let closeButton = UIButton(type: .system)
+        closeButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+        closeButton.tintColor = neonMode ? neonGreen : .white
+        closeButton.backgroundColor = UIColor.black.withAlphaComponent(0.35)
+        closeButton.layer.cornerRadius = 22
+        closeButton.layer.borderWidth = neonMode ? 1 : 0
+        closeButton.layer.borderColor = neonMode ? neonGreen.cgColor : nil
+        closeButton.clipsToBounds = true
+        closeButton.frame = CGRect(
+            x: view.bounds.width - 60,
+            y: view.safeAreaInsets.top + 12,
+            width: 44,
+            height: 44
+        )
+        closeButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
+        overlayView.addSubview(closeButton)
         
         let cancelButton = UIButton(type: .system)
-        cancelButton.setTitle("Cancel", for: .normal)
-        cancelButton.setTitleColor(.white, for: .normal)
-        cancelButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .regular)
-        cancelButton.frame = CGRect(x: 20, y: view.bounds.height - 60, width: 80, height: 44)
+        cancelButton.setTitle(neonMode ? "CANCEL" : "Cancel", for: .normal)
+        cancelButton.setTitleColor(neonMode ? neonGreen : .white, for: .normal)
+        cancelButton.titleLabel?.font = neonMode
+            ? .monospacedSystemFont(ofSize: 17, weight: .semibold)
+            : .systemFont(ofSize: 17, weight: .semibold)
+        cancelButton.backgroundColor = neonMode
+            ? UIColor(red: 0.07, green: 0.09, blue: 0.07, alpha: 1.0)
+            : UIColor.black.withAlphaComponent(0.35)
+        cancelButton.layer.cornerRadius = neonMode ? 22 : 12
+        cancelButton.layer.borderWidth = neonMode ? 1 : 0
+        cancelButton.layer.borderColor = neonMode ? neonGreen.cgColor : nil
+        cancelButton.clipsToBounds = true
+        cancelButton.frame = CGRect(
+            x: (view.bounds.width - 120) / 2,
+            y: view.bounds.height - view.safeAreaInsets.bottom - 72,
+            width: 120,
+            height: 44
+        )
         cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         overlayView.addSubview(cancelButton)
     }

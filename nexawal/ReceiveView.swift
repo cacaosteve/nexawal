@@ -13,6 +13,9 @@ struct ReceiveView: View {
     @State private var showCreateSubaddressPrompt: Bool = false
     @State private var newSubaddressLabel: String = ""
 
+    @Environment(\.classicUI) private var classicUI
+    @Environment(\.classicPalette) private var classicPalette
+
     private let addressFont = Font.system(.caption, design: .monospaced)
 
     var body: some View {
@@ -31,19 +34,29 @@ struct ReceiveView: View {
                 }
                 .padding()
             }
-            .navigationTitle("Receive XMR")
-            .sheet(isPresented: $showShareSheet) {
-                ActivityView(activityItems: [moneroURI])
-            }
+            .navigationTitle(classicUI ? "RECEIVE" : "Receive XMR")
+            .navigationBarTitleDisplayMode(.inline)
+            .background((classicPalette?.background ?? Color(.systemBackground)).ignoresSafeArea())
+            .tint(classicPalette?.accent ?? .accentColor)
+            .scrollContentBackground(classicUI ? .hidden : .automatic)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text(classicUI ? "RECEIVE" : "Receive XMR")
+                        .font(classicUI ? .system(.headline, design: .monospaced).weight(.bold) : .headline)
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         copyAddress()
                     } label: {
                         Image(systemName: "doc.on.doc")
                     }
+                    .foregroundStyle(classicPalette?.accent ?? .accentColor)
                     .accessibilityLabel("Copy Address")
                 }
+            }
+            .sheet(isPresented: $showShareSheet) {
+                ActivityView(activityItems: [moneroURI])
             }
         }
         .onAppear {
@@ -66,12 +79,12 @@ struct ReceiveView: View {
 
     private var heroSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Receive Monero")
-                .font(.title2)
-                .fontWeight(.bold)
+            Text(classicUI ? "RECEIVE XMR" : "Receive Monero")
+                .font(classicUI ? .system(.title2, design: .monospaced).weight(.bold) : .title2.weight(.bold))
+                .foregroundColor(classicPalette?.primaryText ?? .primary)
             Text("Show the QR code, copy the address, or create a fresh receive address for better privacy.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+                .font(classicUI ? .system(.subheadline, design: .monospaced) : .subheadline)
+                .foregroundColor(classicPalette?.secondaryText ?? .secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -79,12 +92,13 @@ struct ReceiveView: View {
     private var subaddressSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Receive Address")
-                .font(.headline)
+                .font(classicUI ? .system(.headline, design: .monospaced).weight(.bold) : .headline)
+                .foregroundStyle(classicPalette?.primaryText ?? .primary)
 
             if viewModel.receiveSubaddresses.isEmpty {
                 Text("Loading addresses…")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("Address", selection: $viewModel.selectedReceiveSubaddressIndex) {
@@ -95,14 +109,25 @@ struct ReceiveView: View {
                         }
                     }
                     .pickerStyle(.menu)
+                    .tint(classicPalette?.accent ?? .accentColor)
 
-                    Button {
-                        showCreateSubaddressPrompt = true
-                    } label: {
-                        Label("New Address", systemImage: "plus.circle")
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    if classicUI, let palette = classicPalette {
+                        Button {
+                            showCreateSubaddressPrompt = true
+                        } label: {
+                            Label("New Address", systemImage: "plus.circle")
+                                .neonSecondaryButtonStyle(classicUI: true, palette: palette)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Button {
+                            showCreateSubaddressPrompt = true
+                        } label: {
+                            Label("New Address", systemImage: "plus.circle")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
                 }
             }
         }
@@ -110,115 +135,173 @@ struct ReceiveView: View {
 
     private var qrSection: some View {
         VStack(spacing: 16) {
-            Text("Scan to Pay")
-                .font(.headline)
+            Text(classicUI ? "SCAN TO PAY" : "Scan to Pay")
+                .font(classicUI ? .system(.headline, design: .monospaced).weight(.bold) : .headline)
+                .foregroundColor(classicPalette?.primaryText ?? .primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             QRCodeView(message: moneroURI)
                 .frame(maxWidth: .infinity)
                 .aspectRatio(1, contentMode: .fit)
-                .background(Color(.systemBackground))
-                .cornerRadius(12)
-                .shadow(color: Color.black.opacity(0.1), radius: 8, x: 0, y: 4)
+                .background(classicUI ? (classicPalette?.background ?? .black) : Color.white)
+                .cornerRadius(classicUI ? 4 : 12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: classicUI ? 4 : 12)
+                        .stroke(classicPalette?.border ?? Color.clear, lineWidth: classicUI ? 1 : 0)
+                )
+                .shadow(color: classicUI ? .clear : Color.black.opacity(0.1), radius: 8, x: 0, y: 4)
 
             Text(moneroURI)
                 .font(.footnote)
                 .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
+                .foregroundColor(classicPalette?.secondaryText ?? .secondary)
                 .textSelection(.enabled)
         }
         .padding()
-        .background(Color(.secondarySystemBackground))
-        .cornerRadius(16)
+        .background(classicPalette?.panel ?? Color(.secondarySystemBackground))
+        .overlay(
+            RoundedRectangle(cornerRadius: classicUI ? 4 : 16)
+                .stroke(classicPalette?.border ?? Color.clear, lineWidth: classicUI ? 1 : 0)
+        )
+        .cornerRadius(classicUI ? 4 : 16)
     }
 
     private var addressSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Address")
-                .font(.headline)
+            Text(classicUI ? "ADDRESS" : "Address")
+                .font(classicUI ? .system(.headline, design: .monospaced).weight(.bold) : .headline)
+                .foregroundColor(classicPalette?.primaryText ?? .primary)
             Text(viewModel.currentReceiveAddress())
                 .font(addressFont)
+                .foregroundColor(classicPalette?.primaryText ?? .primary)
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.secondarySystemBackground))
-                .cornerRadius(8)
+                .background(classicPalette?.panel ?? Color(.secondarySystemBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: classicUI ? 4 : 8)
+                        .stroke(classicPalette?.border ?? Color.clear, lineWidth: classicUI ? 1 : 0)
+                )
+                .cornerRadius(classicUI ? 4 : 8)
                 .textSelection(.enabled)
         }
         .padding()
-        .background(Color(.secondarySystemBackground))
-        .cornerRadius(16)
+        .background(classicPalette?.panel ?? Color(.secondarySystemBackground))
+        .overlay(
+            RoundedRectangle(cornerRadius: classicUI ? 4 : 16)
+                .stroke(classicPalette?.border ?? Color.clear, lineWidth: classicUI ? 1 : 0)
+        )
+        .cornerRadius(classicUI ? 4 : 16)
     }
 
     private var amountSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Payment Request (optional)")
-                .font(.headline)
+            Text(classicUI ? "PAYMENT REQUEST (OPTIONAL)" : "Payment Request (optional)")
+                .font(classicUI ? .system(.headline, design: .monospaced).weight(.bold) : .headline)
+                .foregroundColor(classicPalette?.primaryText ?? .primary)
 
             VStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Amount (XMR)")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                        .font(classicUI ? .system(.subheadline, design: .monospaced) : .subheadline)
+                        .foregroundColor(classicPalette?.secondaryText ?? .secondary)
                     TextField("0.0000", text: $amountInput)
                         .keyboardType(.decimalPad)
                         .textInputAutocapitalization(.never)
                         .disableAutocorrection(true)
+                        .foregroundColor(classicPalette?.primaryText)
                         .padding(12)
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(8)
+                        .background(classicPalette?.panel ?? Color(.secondarySystemBackground))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: classicUI ? 4 : 8)
+                                .stroke(classicPalette?.border ?? Color.clear, lineWidth: classicUI ? 1 : 0)
+                        )
+                        .cornerRadius(classicUI ? 4 : 8)
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Description")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                        .font(classicUI ? .system(.subheadline, design: .monospaced) : .subheadline)
+                        .foregroundColor(classicPalette?.secondaryText ?? .secondary)
                     TextField("Note for the payer", text: $descriptionInput)
                         .textInputAutocapitalization(.sentences)
                         .disableAutocorrection(true)
+                        .foregroundColor(classicPalette?.primaryText)
                         .padding(12)
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(8)
+                        .background(classicPalette?.panel ?? Color(.secondarySystemBackground))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: classicUI ? 4 : 8)
+                                .stroke(classicPalette?.border ?? Color.clear, lineWidth: classicUI ? 1 : 0)
+                        )
+                        .cornerRadius(classicUI ? 4 : 8)
                 }
             }
         }
         .padding()
-        .background(Color(.secondarySystemBackground))
-        .cornerRadius(16)
+        .background(classicPalette?.panel ?? Color(.secondarySystemBackground))
+        .overlay(
+            RoundedRectangle(cornerRadius: classicUI ? 4 : 16)
+                .stroke(classicPalette?.border ?? Color.clear, lineWidth: classicUI ? 1 : 0)
+        )
+        .cornerRadius(classicUI ? 4 : 16)
     }
 
     private var actionSection: some View {
         VStack(spacing: 12) {
-            Button(action: copyAddress) {
-                Label("Copy Address", systemImage: "doc.on.doc")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
+            if classicUI, let palette = classicPalette {
+                Button(action: copyAddress) {
+                    Label("Copy Address", systemImage: "doc.on.doc")
+                        .neonCTAStyle(classicUI: true, palette: palette)
+                }
+                .buttonStyle(.plain)
 
-            if #available(iOS 16.0, *) {
-                ShareLink(item: moneroURI) {
-                    Label("Share Payment Link", systemImage: "square.and.arrow.up")
-                        .frame(maxWidth: .infinity)
+                if #available(iOS 16.0, *) {
+                    ShareLink(item: moneroURI) {
+                        Label("Share Payment Link", systemImage: "square.and.arrow.up")
+                            .neonSecondaryButtonStyle(classicUI: true, palette: palette)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button {
+                        showShareSheet = true
+                    } label: {
+                        Label("Share Payment Link", systemImage: "square.and.arrow.up")
+                            .neonSecondaryButtonStyle(classicUI: true, palette: palette)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.bordered)
             } else {
-                Button {
-                    showShareSheet = true
-                } label: {
-                    Label("Share Payment Link", systemImage: "square.and.arrow.up")
+                Button(action: copyAddress) {
+                    Label("Copy Address", systemImage: "doc.on.doc")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderedProminent)
+
+                if #available(iOS 16.0, *) {
+                    ShareLink(item: moneroURI) {
+                        Label("Share Payment Link", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button {
+                        showShareSheet = true
+                    } label: {
+                        Label("Share Payment Link", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
         }
     }
 
     private var copyConfirmation: some View {
         Text("Address copied to clipboard")
-            .font(.footnote)
+            .font(classicUI ? .system(.footnote, design: .monospaced) : .footnote)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(Color.green.opacity(0.1))
-            .foregroundColor(.green)
+            .background((classicPalette?.success ?? .green).opacity(0.15))
+            .foregroundColor(classicPalette?.success ?? .green)
             .cornerRadius(8)
             .transition(.opacity.combined(with: .move(edge: .top)))
     }
@@ -279,6 +362,8 @@ struct ReceiveView: View {
 
 private struct QRCodeView: View {
     let message: String
+    @Environment(\.classicUI) private var classicUI
+    @Environment(\.classicPalette) private var classicPalette
 
     private static let context = CIContext()
     private static let filter = CIFilter.qrCodeGenerator()
@@ -308,6 +393,7 @@ private struct QRCodeView: View {
         guard !string.isEmpty else { return nil }
         let data = Data(string.utf8)
         QRCodeView.filter.setValue(data, forKey: "inputMessage")
+        QRCodeView.filter.setValue("M", forKey: "inputCorrectionLevel")
 
         guard let outputImage = QRCodeView.filter.outputImage else {
             return nil
@@ -317,7 +403,19 @@ private struct QRCodeView: View {
         let scaleY = targetSize.height / outputImage.extent.size.height
         let scaledImage = outputImage.transformed(by: CGAffineTransform(scaleX: max(scaleX, 10), y: max(scaleY, 10)))
 
-        guard let cgImage = QRCodeView.context.createCGImage(scaledImage, from: scaledImage.extent) else {
+        let colored: CIImage
+        if classicUI, let palette = classicPalette {
+            // Neon modules on matching background (scannable green-on-black / dark-green-on-light).
+            let falseColor = CIFilter.falseColor()
+            falseColor.inputImage = scaledImage
+            falseColor.color0 = CIColor(color: UIColor(palette.accent)) // QR modules (was black)
+            falseColor.color1 = CIColor(color: UIColor(palette.background)) // quiet zone (was white)
+            colored = falseColor.outputImage ?? scaledImage
+        } else {
+            colored = scaledImage
+        }
+
+        guard let cgImage = QRCodeView.context.createCGImage(colored, from: colored.extent) else {
             return nil
         }
 

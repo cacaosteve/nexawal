@@ -2,7 +2,9 @@
 //  MoneroDaemonClient.swift
 //  nexawal
 //
-//  Minimal Monero daemon JSON-RPC client (get_info)
+//  Minimal Monero daemon client for node height discovery.
+//  Prefer JSON-RPC `get_info`, but fall back to `/get_height` for daemons
+//  such as Cuprate where `get_info` parity may be incomplete.
 //
 //
 
@@ -49,6 +51,10 @@ enum MoneroDaemonClient {
     // MARK: - Public API
 
     /// Calls the daemon JSON-RPC `get_info` method.
+    ///
+    /// If the daemon does not provide a compatible `get_info` response,
+    /// falls back to `/get_height` and uses that height as both
+    /// `height` and `targetHeight`.
     /// - Parameter baseURL: e.g. "http://192.168.4.137:18081"
     /// - Parameter proxyAddress: Optional HTTP proxy "host:port" (useful for I2P).
     /// - Returns: Parsed heights (height + target_height).
@@ -59,16 +65,6 @@ enum MoneroDaemonClient {
     ) async throws -> MoneroDaemonInfo {
         let url = try jsonRPCURL(from: baseURL)
 
-        let request = JSONRPCRequest(method: "get_info", params: nil)
-        let body = try JSONEncoder().encode(request)
-
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.httpBody = body
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.timeoutInterval = timeout
-
         let session: URLSession = try makeSession(proxyAddress: proxyAddress, timeout: timeout)
 
         #if DEBUG
@@ -77,35 +73,54 @@ enum MoneroDaemonClient {
         #endif
 
         do {
-            let (data, response) = try await session.data(for: req)
-            guard let http = response as? HTTPURLResponse else {
-                throw MoneroDaemonClientError.nonHTTPResponse
-            }
-            guard (200..<300).contains(http.statusCode) else {
-                let bodyStr = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
-                throw MoneroDaemonClientError.httpStatus(http.statusCode, body: bodyStr)
-            }
-
-            let decoded: JSONRPCResponse<GetInfoResult>
             do {
-                decoded = try JSONDecoder().decode(JSONRPCResponse<GetInfoResult>.self, from: data)
+                let request = JSONRPCRequest(method: "get_info", params: nil)
+                let body = try JSONEncoder().encode(request)
+
+                var req = URLRequest(url: url)
+                req.httpMethod = "POST"
+                req.httpBody = body
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.setValue("application/json", forHTTPHeaderField: "Accept")
+                req.timeoutInterval = timeout
+
+                let (data, response) = try await session.data(for: req)
+                guard let http = response as? HTTPURLResponse else {
+                    throw MoneroDaemonClientError.nonHTTPResponse
+                }
+                guard (200..<300).contains(http.statusCode) else {
+                    let bodyStr = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
+                    throw MoneroDaemonClientError.httpStatus(http.statusCode, body: bodyStr)
+                }
+
+                let decoded: JSONRPCResponse<GetInfoResult>
+                do {
+                    decoded = try JSONDecoder().decode(JSONRPCResponse<GetInfoResult>.self, from: data)
+                } catch {
+                    let bodyStr = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
+                    throw MoneroDaemonClientError.decodingFailed("\(error.localizedDescription). Body=\(bodyStr)")
+                }
+
+                if let rpcErr = decoded.error {
+                    throw MoneroDaemonClientError.rpcError(code: rpcErr.code, message: rpcErr.message)
+                }
+                guard let result = decoded.result else {
+                    throw MoneroDaemonClientError.decodingFailed("Missing result in JSON-RPC response")
+                }
+
+                let effectiveTargetHeight = result.target_height == 0 ? result.height : result.target_height
+
+                #if DEBUG
+                print("🛰️ get_info: height=\(result.height) target_height=\(effectiveTargetHeight)")
+                #endif
+
+                return MoneroDaemonInfo(height: result.height, targetHeight: effectiveTargetHeight)
             } catch {
-                let bodyStr = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
-                throw MoneroDaemonClientError.decodingFailed("\(error.localizedDescription). Body=\(bodyStr)")
+                #if DEBUG
+                print("🛰️ get_info failed, falling back to /get_height: \(error.localizedDescription)")
+                #endif
+                return try await getHeight(baseURL: baseURL, proxyAddress: proxyAddress, timeout: timeout)
             }
-
-            if let rpcErr = decoded.error {
-                throw MoneroDaemonClientError.rpcError(code: rpcErr.code, message: rpcErr.message)
-            }
-            guard let result = decoded.result else {
-                throw MoneroDaemonClientError.decodingFailed("Missing result in JSON-RPC response")
-            }
-
-            #if DEBUG
-            print("🛰️ get_info: height=\(result.height) target_height=\(result.target_height)")
-            #endif
-
-            return MoneroDaemonInfo(height: result.height, targetHeight: result.target_height)
         } catch let e as MoneroDaemonClientError {
             #if DEBUG
             print("🛰️ get_info failed: \(e.localizedDescription)")
@@ -179,6 +194,64 @@ enum MoneroDaemonClient {
 
         return url
     }
+
+    private static func getHeight(
+        baseURL: String,
+        proxyAddress: String?,
+        timeout: TimeInterval
+    ) async throws -> MoneroDaemonInfo {
+        let url = try heightURL(from: baseURL)
+        let session = try makeSession(proxyAddress: proxyAddress, timeout: timeout)
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = timeout
+
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw MoneroDaemonClientError.nonHTTPResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let bodyStr = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
+            throw MoneroDaemonClientError.httpStatus(http.statusCode, body: bodyStr)
+        }
+
+        let decoded: GetHeightResponse
+        do {
+            decoded = try JSONDecoder().decode(GetHeightResponse.self, from: data)
+        } catch {
+            let bodyStr = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
+            throw MoneroDaemonClientError.decodingFailed("\(error.localizedDescription). Body=\(bodyStr)")
+        }
+
+        #if DEBUG
+        print("🛰️ get_height: height=\(decoded.height)")
+        #endif
+
+        return MoneroDaemonInfo(height: decoded.height, targetHeight: decoded.height)
+    }
+
+    private static func heightURL(from baseURL: String) throws -> URL {
+        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw MoneroDaemonClientError.invalidBaseURL(baseURL) }
+
+        guard var url = URL(string: trimmed) else {
+            throw MoneroDaemonClientError.invalidBaseURL(baseURL)
+        }
+
+        if url.path.hasSuffix("/json_rpc") {
+            url.deleteLastPathComponent()
+        }
+
+        if url.path.isEmpty || url.path == "/" {
+            url.appendPathComponent("get_height")
+        } else if !url.path.hasSuffix("/get_height") {
+            url.appendPathComponent("get_height")
+        }
+
+        return url
+    }
 }
 
 // MARK: - JSON-RPC types
@@ -211,4 +284,8 @@ private struct JSONRPCResponse<Result: Decodable>: Decodable {
 private struct GetInfoResult: Decodable {
     let height: UInt64
     let target_height: UInt64
+}
+
+private struct GetHeightResponse: Decodable {
+    let height: UInt64
 }

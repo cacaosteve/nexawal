@@ -11,28 +11,39 @@ import UIKit
 
 struct WalletView: View {
     @ObservedObject var viewModel: WalletViewModel
-    @State private var showSettings: Bool = false
-    @State private var showReceive: Bool = false
-    @State private var showSend: Bool = false
+    @Binding var selectedTab: MainTab
 
     // Transaction details
     @State private var selectedTransfer: WalletCoreFFIClient.Transfer?
     @State private var showTransferDetails: Bool = false
 
+    @Environment(\.classicUI) private var classicUI
+    @Environment(\.classicPalette) private var classicPalette
+
     private func directionLabel(_ t: WalletCoreFFIClient.Transfer) -> String {
         switch t.direction.lowercased() {
         case "in":
-            return "Received"
+            return classicUI ? "RECEIVED" : "Received"
         case "out":
-            return "Sent"
+            return classicUI ? "SENT" : "Sent"
         case "self":
-            return "Self"
+            return classicUI ? "SELF" : "Self"
         default:
-            return t.direction
+            return classicUI ? t.direction.uppercased() : t.direction
         }
     }
 
     private func amountColor(_ t: WalletCoreFFIClient.Transfer) -> Color {
+        if let p = classicPalette {
+            switch t.direction.lowercased() {
+            case "in":
+                return p.success
+            case "out":
+                return p.danger
+            default:
+                return p.primaryText
+            }
+        }
         switch t.direction.lowercased() {
         case "in":
             return .green
@@ -41,6 +52,22 @@ struct WalletView: View {
         default:
             return .primary
         }
+    }
+
+    private var panelBackground: Color {
+        classicPalette?.panel ?? Color(.systemGray6)
+    }
+
+    private var pageBackground: Color {
+        classicPalette?.background ?? Color(.systemBackground)
+    }
+
+    private var primaryText: Color {
+        classicPalette?.primaryText ?? .primary
+    }
+
+    private var secondaryText: Color {
+        classicPalette?.secondaryText ?? .secondary
     }
 
     private func formatTransferTimestamp(_ t: WalletCoreFFIClient.Transfer) -> String? {
@@ -101,10 +128,17 @@ struct WalletView: View {
     }
 
     private func syncHeadline() -> String {
-        if viewModel.isSynced { return "Wallet synced" }
-        if viewModel.chainHeight == 0 { return "Connecting to node" }
-        if viewModel.lastScannedHeight == viewModel.restoreHeight { return "Scanning blockchain" }
-        return "Syncing wallet"
+        let text: String
+        if viewModel.isSynced {
+            text = "Wallet synced"
+        } else if viewModel.chainHeight == 0 {
+            text = "Connecting to node"
+        } else if viewModel.lastScannedHeight == viewModel.restoreHeight {
+            text = "Scanning blockchain"
+        } else {
+            text = "Syncing wallet"
+        }
+        return classicUI ? text.uppercased() : text
     }
 
     private func syncDetail() -> String {
@@ -124,148 +158,152 @@ struct WalletView: View {
         NavigationView {
             ScrollView {
                 VStack(spacing: 24) {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("Wallet")
-                            .font(.headline)
-                            .foregroundColor(.secondary)
-
-                        Text(viewModel.formatXMR(viewModel.piconeroToXMR(viewModel.totalBalance)))
-                            .font(.system(size: 38, weight: .bold, design: .monospaced))
-                            .foregroundColor(.primary)
-
-                        if viewModel.unlockedBalance != viewModel.totalBalance {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Unlocked")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Text(
-                                    viewModel.formatXMR(
-                                        viewModel.piconeroToXMR(viewModel.unlockedBalance))
-                                )
-                                .font(.system(size: 20, weight: .semibold, design: .monospaced))
-                                .foregroundColor(.blue)
-                            }
+                    // Balance / actions
+                    ZStack(alignment: .topLeading) {
+                        if classicUI {
+                            Image("NexawalMark")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 160, height: 160)
+                                .opacity(0.12)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                                .padding(.trailing, 8)
+                                .allowsHitTesting(false)
                         }
 
-                        if viewModel.balanceIsStaleWhileSyncing {
-                            Label("Balance updating while sync catches up", systemImage: "clock.arrow.circlepath")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text(classicUI ? "NEXAWAL" : "Wallet")
+                                .font(classicUI ? .system(.headline, design: .monospaced).weight(.bold) : .headline)
+                                .foregroundColor(classicUI ? primaryText : .secondary)
+                                .tracking(classicUI ? 2 : 0)
 
-                        HStack(spacing: 12) {
-                            Button(action: {
-                                showSend = true
-                            }) {
-                                Label("Send", systemImage: "paperplane.fill")
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(Color.orange.opacity(0.9))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(12)
+                            Text(viewModel.formatDisplayPiconero(viewModel.totalBalance))
+                                .font(.system(size: 38, weight: .bold, design: .monospaced))
+                                .foregroundColor(primaryText)
+
+                            if viewModel.unlockedBalance != viewModel.totalBalance {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(classicUI ? "UNLOCKED" : "Unlocked")
+                                        .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                        .foregroundColor(secondaryText)
+                                    Text(viewModel.formatDisplayPiconero(viewModel.unlockedBalance))
+                                        .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(classicPalette?.accent ?? .blue)
+                                }
                             }
 
-                            Button(action: {
-                                showReceive = true
-                            }) {
-                                Label("Receive", systemImage: "qrcode")
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(Color.green.opacity(0.9))
-                                    .foregroundColor(.white)
-                                    .cornerRadius(12)
+                            if viewModel.balanceIsStaleWhileSyncing {
+                                Label("Balance updating while sync catches up", systemImage: "clock.arrow.circlepath")
+                                    .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                    .foregroundColor(secondaryText)
+                            }
+
+                            HStack(spacing: 12) {
+                                Button(action: {
+                                    selectedTab = .send
+                                }) {
+                                    Label(classicUI ? "SEND" : "Send", systemImage: "paperplane.fill")
+                                        .font(classicUI ? .system(.body, design: .monospaced).weight(.semibold) : .body)
+                                        .frame(maxWidth: .infinity)
+                                        .padding()
+                                        .background(classicUI ? Color.clear : Color.orange.opacity(0.9))
+                                        .foregroundColor(classicUI ? (classicPalette?.accent ?? .green) : .white)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: classicUI ? 4 : 12)
+                                                .stroke(classicUI ? (classicPalette?.border ?? .green) : Color.clear, lineWidth: classicUI ? 2 : 0)
+                                        )
+                                        .cornerRadius(classicUI ? 4 : 12)
+                                }
+
+                                Button(action: {
+                                    selectedTab = .receive
+                                }) {
+                                    Label(classicUI ? "RECEIVE" : "Receive", systemImage: "qrcode")
+                                        .font(classicUI ? .system(.body, design: .monospaced).weight(.semibold) : .body)
+                                        .frame(maxWidth: .infinity)
+                                        .padding()
+                                        .background(classicUI ? Color.clear : Color.green.opacity(0.9))
+                                        .foregroundColor(classicUI ? (classicPalette?.accent ?? .green) : .white)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: classicUI ? 4 : 12)
+                                                .stroke(classicUI ? (classicPalette?.border ?? .green) : Color.clear, lineWidth: classicUI ? 2 : 0)
+                                        )
+                                        .cornerRadius(classicUI ? 4 : 12)
+                                }
                             }
                         }
                     }
                     .padding()
                     .frame(maxWidth: .infinity)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(16)
+                    .background(panelBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: classicUI ? 4 : 16)
+                            .stroke(classicUI ? (classicPalette?.border ?? .clear) : Color.clear, lineWidth: 1)
+                    )
+                    .cornerRadius(classicUI ? 4 : 16)
                     .padding(.horizontal)
 
+                    // Status
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Status")
-                            .font(.headline)
+                        Text(classicUI ? "STATUS" : "Status")
+                            .font(classicUI ? .system(.headline, design: .monospaced).weight(.bold) : .headline)
+                            .foregroundColor(primaryText)
 
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 8) {
-                                Image(systemName: viewModel.isSynced ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
-                                    .foregroundColor(viewModel.isSynced ? .green : .orange)
+                                Circle()
+                                    .fill(viewModel.isSynced ? (classicPalette?.success ?? .green) : (classicPalette?.accent ?? .orange))
+                                    .frame(width: 10, height: 10)
                                 Text(syncHeadline())
-                                    .font(.headline)
+                                    .font(classicUI ? .system(.headline, design: .monospaced) : .headline)
+                                    .foregroundColor(primaryText)
                             }
 
                             Text(syncDetail())
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
+                                .font(classicUI ? .system(.subheadline, design: .monospaced) : .subheadline)
+                                .foregroundColor(secondaryText)
 
                             ProgressView(value: viewModel.syncProgress)
-                                .progressViewStyle(LinearProgressViewStyle())
+                                .progressViewStyle(LinearProgressViewStyle(tint: classicPalette?.progress ?? .accentColor))
 
-                            HStack {
-                                Text("Node")
-                                Spacer()
-                                Text(MoneroConfig.daemonAddress)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-
-                            HStack {
-                                Text("Scanned")
-                                Spacer()
-                                Text("\(viewModel.lastScannedHeight)")
-                                    .font(.system(.caption, design: .monospaced))
-                            }
-
-                            HStack {
-                                Text("Network Height")
-                                Spacer()
-                                Text("\(viewModel.chainHeight)")
-                                    .font(.system(.caption, design: .monospaced))
-                            }
-
-                            if !viewModel.isSynced {
-                                HStack {
-                                    Text("Remaining")
-                                    Spacer()
-                                    Text("\(viewModel.remainingBlocks) blocks")
-                                        .font(.system(.caption, design: .monospaced))
-                                }
-                            }
-
-                            if viewModel.scanBlocksPerSecond > 0 {
-                                HStack {
-                                    Text("Throughput")
-                                    Spacer()
-                                    Text(String(format: "%.1f blk/s", viewModel.scanBlocksPerSecond))
-                                        .font(.system(.caption, design: .monospaced))
-                                }
-                            }
+                            classicStatusRow(label: classicUI ? "NODE" : "Node", value: MoneroConfig.daemonAddress)
+                            classicStatusRow(label: classicUI ? "SCANNED" : "Scanned", value: "\(viewModel.lastScannedHeight)")
+                            classicStatusRow(label: classicUI ? "NETWORK HEIGHT" : "Network Height", value: "\(viewModel.chainHeight)")
+                            classicStatusRow(label: classicUI ? "REMAINING" : "Remaining", value: "\(viewModel.remainingBlocks) blocks")
+                            classicStatusRow(
+                                label: classicUI ? "THROUGHPUT" : "Throughput",
+                                value: String(format: "%.1f blk/s", viewModel.scanBlocksPerSecond)
+                            )
                         }
                     }
                     .padding()
                     .frame(maxWidth: .infinity)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(16)
+                    .background(panelBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: classicUI ? 4 : 16)
+                            .stroke(classicUI ? (classicPalette?.border ?? .clear) : Color.clear, lineWidth: 1)
+                    )
+                    .cornerRadius(classicUI ? 4 : 16)
                     .padding(.horizontal)
 
+                    // Recent transactions
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Text("Recent Transactions")
-                                .font(.headline)
+                            Text(classicUI ? "RECENT TRANSACTIONS" : "Recent Transactions")
+                                .font(classicUI ? .system(.headline, design: .monospaced).weight(.bold) : .headline)
+                                .foregroundColor(primaryText)
                             Spacer()
                             if !viewModel.transfers.isEmpty {
                                 Text("\(viewModel.transfers.count)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                                    .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                    .foregroundColor(secondaryText)
                             }
                         }
 
                         if viewModel.transfers.isEmpty {
                             Text("No transactions yet.")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
+                                .font(classicUI ? .system(.subheadline, design: .monospaced) : .subheadline)
+                                .foregroundColor(secondaryText)
                         } else {
                             VStack(spacing: 0) {
                                 ForEach(sortedTransfers(viewModel.transfers), id: \.txid) { t in
@@ -280,25 +318,24 @@ struct WalletView: View {
 
                                             VStack(alignment: .leading, spacing: 4) {
                                                 Text(directionLabel(t))
-                                                    .font(.subheadline)
-                                                    .fontWeight(.semibold)
-                                                    .foregroundColor(.primary)
+                                                    .font(classicUI ? .system(.subheadline, design: .monospaced).weight(.semibold) : .subheadline.weight(.semibold))
+                                                    .foregroundColor(primaryText)
 
                                                 HStack(spacing: 8) {
                                                     if let ts = formatTransferTimestamp(t) {
                                                         Text(ts)
-                                                            .font(.caption)
-                                                            .foregroundColor(.secondary)
+                                                            .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                                            .foregroundColor(secondaryText)
                                                             .accessibilityLabel(formatTransferTimestampAbsolute(t) ?? ts)
                                                     }
-                                                    Text(t.isPending ? "Pending" : "\(t.confirmations) conf")
-                                                        .font(.caption)
-                                                        .foregroundColor(.secondary)
+                                                    Text(t.isPending ? (classicUI ? "PENDING" : "Pending") : "\(t.confirmations) conf")
+                                                        .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                                        .foregroundColor(secondaryText)
                                                 }
 
                                                 Text(t.txid)
                                                     .font(.system(.caption2, design: .monospaced))
-                                                    .foregroundColor(.secondary)
+                                                    .foregroundColor(secondaryText)
                                                     .lineLimit(1)
                                                     .truncationMode(.middle)
                                             }
@@ -306,17 +343,15 @@ struct WalletView: View {
                                             Spacer()
 
                                             VStack(alignment: .trailing, spacing: 4) {
-                                                let amtXMR = viewModel.piconeroToXMR(t.amount)
-                                                Text(viewModel.formatXMR(amtXMR))
+                                                Text(viewModel.formatDisplayPiconero(t.amount))
                                                     .font(.system(.subheadline, design: .monospaced))
                                                     .fontWeight(.semibold)
                                                     .foregroundColor(amountColor(t))
 
                                                 if let fee = t.fee {
-                                                    let feeXMR = viewModel.piconeroToXMR(fee)
-                                                    Text("Fee \(viewModel.formatXMR(feeXMR))")
-                                                        .font(.caption2)
-                                                        .foregroundColor(.secondary)
+                                                    Text("Fee \(viewModel.formatDisplayPiconero(fee))")
+                                                        .font(classicUI ? .system(.caption2, design: .monospaced) : .caption2)
+                                                        .foregroundColor(secondaryText)
                                                 }
                                             }
                                         }
@@ -326,6 +361,7 @@ struct WalletView: View {
 
                                     if t.txid != sortedTransfers(viewModel.transfers).last?.txid {
                                         Divider()
+                                            .background(classicPalette?.border.opacity(0.4) ?? Color(.separator))
                                     }
                                 }
                             }
@@ -360,10 +396,7 @@ struct WalletView: View {
                                                     HStack {
                                                         Text("Amount")
                                                         Spacer()
-                                                        Text(
-                                                            viewModel.formatXMR(
-                                                                viewModel.piconeroToXMR(t.amount))
-                                                        )
+                                                        Text(viewModel.formatExactPiconero(t.amount))
                                                         .font(
                                                             .system(.caption, design: .monospaced)
                                                         )
@@ -373,10 +406,7 @@ struct WalletView: View {
                                                         HStack {
                                                             Text("Fee")
                                                             Spacer()
-                                                            Text(
-                                                                viewModel.formatXMR(
-                                                                    viewModel.piconeroToXMR(fee))
-                                                            )
+                                                            Text(viewModel.formatExactPiconero(fee))
                                                             .font(
                                                                 .system(
                                                                     .caption, design: .monospaced)
@@ -459,8 +489,12 @@ struct WalletView: View {
                     }
                     .padding()
                     .frame(maxWidth: .infinity)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(16)
+                    .background(panelBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: classicUI ? 4 : 16)
+                            .stroke(classicUI ? (classicPalette?.border ?? .clear) : Color.clear, lineWidth: 1)
+                    )
+                    .cornerRadius(classicUI ? 4 : 16)
                     .padding(.horizontal)
 
                     HStack(spacing: 12) {
@@ -472,17 +506,24 @@ struct WalletView: View {
                             HStack {
                                 if viewModel.isRefreshing {
                                     ProgressView()
-                                        .progressViewStyle(CircularProgressViewStyle())
+                                        .progressViewStyle(CircularProgressViewStyle(tint: classicUI ? (classicPalette?.accent ?? .accentColor) : .white))
                                 } else {
                                     Image(systemName: "arrow.clockwise")
                                 }
-                                Text(viewModel.isRefreshing ? "Refreshing..." : "Refresh Wallet")
+                                Text(viewModel.isRefreshing
+                                     ? (classicUI ? "REFRESHING..." : "Refreshing...")
+                                     : (classicUI ? "REFRESH WALLET" : "Refresh Wallet"))
+                                    .font(classicUI ? .system(.body, design: .monospaced).weight(.semibold) : .body)
                             }
                             .frame(maxWidth: .infinity)
                             .padding()
-                            .background(Color.blue)
-                            .foregroundColor(.white)
-                            .cornerRadius(12)
+                            .background(classicUI ? Color.clear : Color.blue)
+                            .foregroundColor(classicUI ? (classicPalette?.accent ?? .blue) : .white)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: classicUI ? 4 : 12)
+                                    .stroke(classicUI ? (classicPalette?.border ?? .clear) : Color.clear, lineWidth: classicUI ? 2 : 0)
+                            )
+                            .cornerRadius(classicUI ? 4 : 12)
                         }
                         .disabled(viewModel.isRefreshing)
 
@@ -492,13 +533,18 @@ struct WalletView: View {
                             }) {
                                 HStack {
                                     Image(systemName: "xmark.circle.fill")
-                                    Text("Cancel")
+                                    Text(classicUI ? "CANCEL" : "Cancel")
+                                        .font(classicUI ? .system(.body, design: .monospaced).weight(.semibold) : .body)
                                 }
                                 .frame(maxWidth: .infinity)
                                 .padding()
-                                .background(Color.red.opacity(0.9))
-                                .foregroundColor(.white)
-                                .cornerRadius(12)
+                                .background(classicUI ? Color.clear : Color.red.opacity(0.9))
+                                .foregroundColor(classicUI ? (classicPalette?.danger ?? .red) : .white)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: classicUI ? 4 : 12)
+                                        .stroke(classicUI ? (classicPalette?.danger ?? .red) : Color.clear, lineWidth: classicUI ? 2 : 0)
+                                )
+                                .cornerRadius(classicUI ? 4 : 12)
                             }
                         }
                     }
@@ -507,41 +553,41 @@ struct WalletView: View {
                     if let error = viewModel.errorMessage {
                         ScrollView {
                             Text(error)
-                                .foregroundColor(.red)
-                                .font(.caption)
+                                .foregroundColor(classicPalette?.danger ?? .red)
+                                .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
                                 .multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .frame(maxHeight: 150)
                         .padding(.horizontal)
                         .padding(.vertical, 8)
-                        .background(Color.red.opacity(0.1))
+                        .background((classicPalette?.danger ?? .red).opacity(0.1))
                         .cornerRadius(8)
                         .padding(.horizontal)
                     }
                 }
                 .padding(.vertical)
             }
+            .background(pageBackground.ignoresSafeArea())
             .navigationTitle("")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showSettings = true }) {
-                        Image(systemName: "gearshape")
-                    }
-                }
-            }
-            .sheet(isPresented: $showSettings) {
-                SettingsView(viewModel: viewModel)
-            }
-            .sheet(isPresented: $showReceive) {
-                ReceiveView(viewModel: viewModel)
-            }
-            .sheet(isPresented: $showSend) {
-                SendView(viewModel: viewModel)
-            }
             .refreshable {
                 await viewModel.refreshWallet()
             }
+        }
+    }
+
+    @ViewBuilder
+    private func classicStatusRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(classicUI ? .system(.caption, design: .monospaced) : .body)
+                .foregroundColor(secondaryText)
+            Spacer()
+            Text(value)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(primaryText)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 }
@@ -556,7 +602,10 @@ struct SettingsView: View {
     @State private var biometricsAvailable: Bool = false
     @State private var biometricsEnrolled: Bool = false
     @State private var showAdvancedRecovery: Bool = false
-    @Environment(\.dismiss) var dismiss
+    @State private var saveConfirmation: String?
+    @AppStorage(MoneroConfig.userDefaultsClassicUIKey) private var classicUIEnabled: Bool = false
+    @Environment(\.classicUI) private var classicUI
+    @Environment(\.classicPalette) private var classicPalette
 
     init(viewModel: WalletViewModel) {
         self._viewModel = ObservedObject(initialValue: viewModel)
@@ -575,47 +624,59 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Network & Node")) {
-                    TextField("Daemon hostname:port", text: $nodeAddress)
-                        .font(.system(.body, design: .monospaced))
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                    Text("Example: 192.168.4.137:18081\n(Full URL will be: http://192.168.4.137:18081)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                Section(header: NeonSectionHeader(title: "Appearance")) {
+                    NeonToggle(title: "Classic UI", isOn: $classicUIEnabled)
+                    Text("Standard non-neon look. Leave off for the neon terminal theme (default).")
+                        .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                        .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                 }
 
-                Section(header: Text("Restore & Rescan")) {
+                Section(header: NeonSectionHeader(title: "Network & Node")) {
+                    TextField("Daemon hostname:port", text: $nodeAddress)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    Text("Example: 127.0.0.1:18092\n(Full URL will be: http://127.0.0.1:18092)")
+                        .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                        .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
+                }
+
+                Section(header: NeonSectionHeader(title: "Restore & Rescan")) {
                     TextField("Restore height (optional)", text: $rescanHeightInput)
                         .keyboardType(.numberPad)
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                     Text("Use an earlier height if funds are missing after import, or rescan from 0 if you need a full recovery.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                        .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                 }
 
-                Section(header: Text("Security")) {
-                    Toggle("Require Face ID / Touch ID", isOn: $requireBiometrics)
-                        .disabled(!biometricsAvailable || !biometricsEnrolled)
+                Section(header: NeonSectionHeader(title: "Security")) {
+                    NeonToggle(
+                        title: "Require Face ID / Touch ID",
+                        isOn: $requireBiometrics,
+                        disabled: !biometricsAvailable || !biometricsEnrolled
+                    )
 
                     if !biometricsAvailable {
                         Text("Biometric or device authentication is not available on this device.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                            .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                     } else if !biometricsEnrolled {
                         Text("Biometric authentication is available, but no biometric data is enrolled.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                            .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                     } else {
                         Text("When enabled, opening the stored wallet and sending funds will require device authentication.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                            .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                     }
                 }
 
-                Section(header: Text("Maintenance")) {
-                    Button(role: .destructive) {
+                Section(header: NeonSectionHeader(title: "Maintenance")) {
+                    Button {
                         Task {
                             do {
                                 try await WalletManager.shared.clearScanCache()
@@ -625,88 +686,159 @@ struct SettingsView: View {
                         }
                     } label: {
                         Text("Clear scan cache (this network)")
+                            .frame(maxWidth: .infinity)
                     }
+                    .foregroundColor(classicUI ? (classicPalette?.danger ?? .red) : .red)
                 }
 
-                Section(header: Text("Rescan Wallet")) {
+                Section(header: NeonSectionHeader(title: "Recovery")) {
                     TextField("Restore height", text: $rescanHeightInput)
                         .keyboardType(.numberPad)
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
 
-                    Button("Rescan from Height") {
-                        initiateRescan()
-                    }
-                    .disabled(parsedRescanHeight() == nil || isRescanInProgress)
+                    if classicUI, let palette = classicPalette {
+                        Button {
+                            initiateRescan()
+                        } label: {
+                            Text("Rescan from Height")
+                                .neonSecondaryButtonStyle(classicUI: true, palette: palette)
+                        }
+                        .disabled(parsedRescanHeight() == nil || isRescanInProgress)
+                        .listRowBackground(Color.clear)
+                        .buttonStyle(.plain)
 
-                    Button("Full Rescan (from block 0)") {
-                        rescanHeightInput = "0"
-                        initiateRescan()
+                        Button {
+                            rescanHeightInput = "0"
+                            initiateRescan()
+                        } label: {
+                            Text("Full Rescan (from block 0)")
+                                .neonSecondaryButtonStyle(classicUI: true, palette: palette)
+                        }
+                        .disabled(isRescanInProgress)
+                        .listRowBackground(Color.clear)
+                        .buttonStyle(.plain)
+                    } else {
+                        Button("Rescan from Height") {
+                            initiateRescan()
+                        }
+                        .disabled(parsedRescanHeight() == nil || isRescanInProgress)
+
+                        Button("Full Rescan (from block 0)") {
+                            rescanHeightInput = "0"
+                            initiateRescan()
+                        }
+                        .disabled(isRescanInProgress)
                     }
-                    .disabled(isRescanInProgress)
                 }
 
-                Section(header: Text("Advanced Recovery")) {
-                    DisclosureGroup("Scan additional accounts or subaddresses", isExpanded: $showAdvancedRecovery) {
+                Section(header: NeonSectionHeader(title: "Advanced Recovery")) {
+                    NeonDisclosureGroup(
+                        title: "Scan additional accounts or subaddresses",
+                        isExpanded: $showAdvancedRecovery
+                    ) {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Only change these values if a wallet import appears incomplete after using the correct restore height.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                                .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
 
                             TextField("Gap limit (1-100000)", text: $gapLimitInput)
                                 .keyboardType(.numberPad)
+                                .foregroundStyle(classicPalette?.primaryText ?? .primary)
                                 .autocorrectionDisabled()
                                 .textInputAutocapitalization(.never)
                             Text("Controls how many receive subaddresses are scanned for this wallet.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                                .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
 
                             TextField("Account lookahead (1-1000)", text: $accountGapInput)
                                 .keyboardType(.numberPad)
+                                .foregroundStyle(classicPalette?.primaryText ?? .primary)
                                 .autocorrectionDisabled()
                                 .textInputAutocapitalization(.never)
                             Text("Controls how many Monero accounts are scanned starting at account 0.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                                .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                         }
                     }
                 }
             }
-            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .neonFormChrome(classicUI: classicUI, palette: classicPalette)
+            .tint(classicPalette?.accent ?? .accentColor)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+                ToolbarItem(placement: .principal) {
+                    Text(classicUI ? "SETTINGS" : "Settings")
+                        .font(classicUI ? .system(.headline, design: .monospaced).weight(.bold) : .headline)
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        MoneroConfig.setDaemonAddress(nodeAddress)
-                        if let gap = parsedGapLimit() {
-                            MoneroConfig.setGapLimit(gap)
-                            Task {
-                                if let id = await WalletManager.shared.getCurrentWalletId() {
-                                    try? WalletCoreFFIClient.setGapLimit(
-                                        walletId: id, gapLimit: gap)
-                                }
-                            }
+                    if classicUI, let palette = classicPalette {
+                        Button {
+                            saveSettings()
+                        } label: {
+                            Text("Save")
+                                .font(.system(.body, design: .monospaced).weight(.semibold))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 6)
+                                .background(palette.cta)
+                                .foregroundStyle(palette.ctaText)
+                                .clipShape(Capsule())
                         }
-                        if let acc = Int(accountGapInput) {
-                            let clamped = max(1, min(acc, 1000))
-                            MoneroConfig.setAccountGap(clamped)
-                        }
-
-                        Task {
-                            await viewModel.updateBiometricProtection(enabled: requireBiometrics)
-                            dismiss()
+                        .buttonStyle(.plain)
+                    } else {
+                        Button("Save") {
+                            saveSettings()
                         }
                     }
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if let saveConfirmation {
+                    Text(saveConfirmation)
+                        .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
+                        .padding(10)
+                        .background((classicPalette?.panel ?? Color(.secondarySystemBackground)).opacity(0.95))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .padding(.bottom, 12)
+                        .transition(.opacity)
                 }
             }
             .task {
                 let availability = await viewModel.biometricAvailability()
                 biometricsAvailable = availability.available
                 biometricsEnrolled = availability.enrolled
+            }
+        }
+    }
+
+    private func saveSettings() {
+        MoneroConfig.setDaemonAddress(nodeAddress)
+        MoneroConfig.setClassicUIEnabled(classicUIEnabled)
+        if let gap = parsedGapLimit() {
+            MoneroConfig.setGapLimit(gap)
+            Task {
+                if let id = await WalletManager.shared.getCurrentWalletId() {
+                    try? WalletCoreFFIClient.setGapLimit(
+                        walletId: id, gapLimit: gap)
+                }
+            }
+        }
+        if let acc = Int(accountGapInput) {
+            let clamped = max(1, min(acc, 1000))
+            MoneroConfig.setAccountGap(clamped)
+        }
+
+        Task {
+            await viewModel.updateBiometricProtection(enabled: requireBiometrics)
+            withAnimation {
+                saveConfirmation = "Saved"
+            }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            withAnimation {
+                saveConfirmation = nil
             }
         }
     }
@@ -728,7 +860,6 @@ struct SettingsView: View {
 
     private func initiateRescan() {
         guard let height = parsedRescanHeight() else { return }
-        dismiss()
         Task {
             await viewModel.rescan(from: height)
         }

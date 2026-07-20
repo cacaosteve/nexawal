@@ -13,6 +13,8 @@ struct WalletCreationView: View {
     @State private var restoreHeightInput: String = "0"
     @State private var isMainnet: Bool = true
     @FocusState private var isMnemonicFocused: Bool
+    @Environment(\.classicUI) private var classicUI
+    @Environment(\.classicPalette) private var classicPalette
 
     enum WalletSetupMode: String, CaseIterable, Identifiable {
         case create = "Create new wallet (fast)"
@@ -27,7 +29,8 @@ struct WalletCreationView: View {
     // Import scan tuning presets (for experiments / quick switching)
 
 
-    // Fast-restore-height (create mode only): we fetch daemon get_info and set restoreHeight = target_height - 10.
+    // Fast-restore-height (create mode only): we fetch daemon height info and set
+    // restoreHeight = node tip - 10.
     @State private var suggestedRestoreHeight: UInt64?
     @State private var isFetchingSuggestedHeight: Bool = false
     @State private var suggestedHeightError: String?
@@ -42,7 +45,7 @@ struct WalletCreationView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Wallet Setup")) {
+                Section(header: NeonSectionHeader(title: "Wallet Setup")) {
                     Text("Choose whether you’re creating a brand new wallet (fast sync) or importing an existing wallet (full scan unless you set a restore height).")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -72,7 +75,7 @@ struct WalletCreationView: View {
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             } else if let suggested = suggestedRestoreHeight {
-                                Text("Starting height (fast): \(suggested) (node target_height − 10)")
+                                Text("Starting height (fast): \(suggested) (node tip − 10)")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             } else {
@@ -111,10 +114,13 @@ struct WalletCreationView: View {
                         }
                     }
 
-                    Toggle("Mainnet", isOn: $isMainnet)
+                    NeonToggle(title: "Mainnet", isOn: $isMainnet)
 
-                    Toggle("Require Face ID / Touch ID", isOn: $requireBiometrics)
-                        .disabled(!biometricsAvailable || !biometricsEnrolled)
+                    NeonToggle(
+                        title: "Require Face ID / Touch ID",
+                        isOn: $requireBiometrics,
+                        disabled: !biometricsAvailable || !biometricsEnrolled
+                    )
 
                     if !biometricsAvailable {
                         Text("Biometric or device authentication is not available on this device.")
@@ -194,29 +200,34 @@ struct WalletCreationView: View {
                 if let error = viewModel.errorMessage {
                     Section {
                         Text(error)
-                            .foregroundColor(.red)
-                            .font(.caption)
+                            .foregroundColor(classicPalette?.danger ?? .red)
+                            .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
                     }
                 }
 
-                Section(header: Text("Info")) {
+                Section(header: NeonSectionHeader(title: "Info")) {
                     HStack {
                         Text("WalletCore Version:")
+                            .foregroundColor(classicPalette?.secondaryText)
                         Spacer()
                         Text(viewModel.getVersion())
                             .font(.system(.body, design: .monospaced))
+                            .foregroundColor(classicPalette?.primaryText)
                     }
 
                     HStack {
                         Text("Node Address:")
+                            .foregroundColor(classicPalette?.secondaryText)
                         Spacer()
                         Text(MoneroConfig.daemonAddress)
                             .font(.system(.body, design: .monospaced))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(classicPalette?.secondaryText ?? .secondary)
                     }
                 }
             }
-            .navigationTitle("Create Wallet")
+            .navigationTitle(classicUI ? "NEXAWAL" : "Create Wallet")
+            .neonFormChrome(classicUI: classicUI, palette: classicPalette)
+            .tint(classicPalette?.accent ?? .accentColor)
         }
         .task {
             // Authoritative: check persisted wallet presence (metadata) rather than in-memory UI state.
@@ -243,8 +254,8 @@ struct WalletCreationView: View {
         // For import mode, we take the user's input.
         let rawHeight = UInt64(restoreHeightInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
         let effectiveHeight: UInt64 = {
-            // Feather-style optimization: for *new wallets only*, if the user leaves restore height at 0,
-            // use a fast restore height near tip: target_height - 10.
+            // Feather-style optimization: for *new wallets only*, if the user leaves restore
+            // height at 0, use a fast restore height near tip: node tip - 10.
             if setupMode == .create, rawHeight == 0, let suggested = suggestedRestoreHeight {
                 return suggested
             }
@@ -282,7 +293,7 @@ struct WalletCreationView: View {
         isFetchingSuggestedHeight = true
         suggestedHeightError = nil
 
-        // Fetch daemon get_info and compute restoreHeight = target_height - 10.
+        // Fetch daemon height info and compute restoreHeight = node tip - 10.
         do {
             let baseURL = MoneroConfig.scanNodeURL()
 

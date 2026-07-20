@@ -8,7 +8,7 @@ import Darwin
 struct MoneroConfig {
 
     // MARK: - Constants / Defaults
-    nonisolated static let defaultAddress = "192.168.4.137:18081"
+    nonisolated static let defaultAddress = "192.168.4.137:18089"
     nonisolated static let userDefaultsKey = "monero_daemon_address"
 
     // I2P defaults and keys (kept for UI compatibility)
@@ -54,6 +54,10 @@ struct MoneroConfig {
     nonisolated private static let userDefaultsWallet2LockoutsKey = "monero_wallet2_bulk_lockouts_v1"
     nonisolated private static let wallet2LockoutDefaultSeconds: TimeInterval = 60 * 30
 
+    // Appearance: Classic UI ON = standard non-neon look; OFF (default) = neon terminal theme.
+    nonisolated static let userDefaultsClassicUIKey = "ui_classic_mode"
+    nonisolated static let defaultClassicUIEnabled: Bool = false
+
     enum WalletError: Error {
         case invalidAddress
         case invalidGapLimit
@@ -78,7 +82,11 @@ struct MoneroConfig {
             case "node.sethforprivacy.com:443",
                  "https://node.sethforprivacy.com:443",
                  "node.monerod.org:443",
-                 "https://node.monerod.org:443":
+                 "https://node.monerod.org:443",
+                 "192.168.4.137:18081",
+                 "http://192.168.4.137:18081",
+                 "10.0.2.2:18081",
+                 "http://10.0.2.2:18081":
                 UserDefaults.standard.set(defaultAddress, forKey: userDefaultsKey)
                 return defaultAddress
             default:
@@ -168,6 +176,19 @@ struct MoneroConfig {
         } else {
             UserDefaults.standard.removeObject(forKey: userDefaultsI2PProxyKey)
         }
+    }
+
+    // MARK: - Appearance
+    nonisolated static var classicUIEnabled: Bool {
+        if UserDefaults.standard.object(forKey: userDefaultsClassicUIKey) == nil {
+            return defaultClassicUIEnabled
+        }
+        return UserDefaults.standard.bool(forKey: userDefaultsClassicUIKey)
+    }
+
+    @MainActor
+    static func setClassicUIEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: userDefaultsClassicUIKey)
     }
 
     // MARK: - Gap limits

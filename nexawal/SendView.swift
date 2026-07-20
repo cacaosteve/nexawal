@@ -3,7 +3,9 @@ import SwiftUI
 struct SendView: View {
     @ObservedObject var viewModel: WalletViewModel
 
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.classicUI) private var classicUI
+    @Environment(\.classicPalette) private var classicPalette
+    @Environment(\.colorScheme) private var colorScheme
 
     // Inputs
     @State private var toAddress: String = ""
@@ -19,6 +21,7 @@ struct SendView: View {
     @State private var infoMessage: String?
     @State private var showSendConfirmation: Bool = false
     @State private var showScanner: Bool = false
+    @State private var showAdvanced: Bool = false
 
     // Subaddress send selection (account 0 only for MVP)
     @State private var fromSubaddressMinor: UInt32 = 0
@@ -63,48 +66,51 @@ struct SendView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Recipient")) {
+                Section(header: NeonSectionHeader(title: "Recipient")) {
                     TextField("Monero address", text: $toAddress)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
                 }
 
-                Section(header: Text("Amount")) {
+                Section(header: NeonSectionHeader(title: "Amount")) {
                     HStack {
                         TextField("0.0", text: $amountXMR)
                             .keyboardType(.decimalPad)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .foregroundStyle(classicPalette?.primaryText ?? .primary)
                         Spacer()
                         Text("XMR")
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                     }
 
                     HStack {
-                        Text(availableLabel())
+                        NeonFormLabel(text: availableLabel())
                         Spacer()
-                        Text(viewModel.formatXMR(viewModel.piconeroToXMR(availablePiconero())))
+                        Text(viewModel.formatDisplayPiconero(availablePiconero()))
                             .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                     }
 
                     HStack {
-                        Text("Ring size")
+                        NeonFormLabel(text: "Ring size")
                         Spacer()
                         TextField("16", text: $ringLenInput)
                             .keyboardType(.numberPad)
                             .frame(width: 70)
                             .multilineTextAlignment(.trailing)
+                            .foregroundStyle(classicPalette?.primaryText ?? .primary)
                     }
                 }
 
                 if let fee = estimatedFeePiconero {
-                    Section(header: Text("Confirm")) {
+                    Section(header: NeonSectionHeader(title: "Confirm")) {
                         HStack {
                             Text("Estimated fee")
                             Spacer()
-                            Text(viewModel.formatXMR(viewModel.piconeroToXMR(fee)))
+                            Text(viewModel.formatExactPiconero(fee))
                                 .font(.system(.caption, design: .monospaced))
                         }
                         if let amt = parsedAmountPiconero() {
@@ -112,7 +118,7 @@ struct SendView: View {
                                 Text("Total (amount + fee)")
                                 Spacer()
                                 let total = safeAdd(amt, fee)
-                                Text(viewModel.formatXMR(viewModel.piconeroToXMR(total)))
+                                Text(viewModel.formatExactPiconero(total))
                                     .font(.system(.caption, design: .monospaced))
                             }
                         }
@@ -129,7 +135,7 @@ struct SendView: View {
                 }
 
                 if let txid = sentTxid, let fee = sentFeePiconero {
-                    Section(header: Text("Sent")) {
+                    Section(header: NeonSectionHeader(title: "Sent")) {
                         HStack {
                             Text("TXID")
                             Spacer()
@@ -140,7 +146,7 @@ struct SendView: View {
                         HStack {
                             Text("Fee")
                             Spacer()
-                            Text(viewModel.formatXMR(viewModel.piconeroToXMR(fee)))
+                            Text(viewModel.formatExactPiconero(fee))
                                 .font(.system(.caption, design: .monospaced))
                         }
                     }
@@ -156,65 +162,118 @@ struct SendView: View {
                 if let err = errorMessage {
                     Section {
                         Text(err)
-                            .foregroundColor(.red)
-                            .font(.caption)
+                            .foregroundColor(classicPalette?.danger ?? .red)
+                            .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
                     }
                 }
 
-                Section(header: Text("Actions")) {
-                    HStack(spacing: 12) {
+                Section(header: NeonSectionHeader(title: "Actions")) {
+                    if classicUI, let palette = classicPalette {
+                        HStack(spacing: 12) {
+                            Button {
+                                Task { await estimateFee() }
+                            } label: {
+                                HStack {
+                                    if isEstimating {
+                                        ProgressView().tint(palette.accent)
+                                    } else {
+                                        Image(systemName: "dollarsign.circle")
+                                    }
+                                    Text(isEstimating ? "Estimating..." : "Preview Fee")
+                                }
+                                .neonSecondaryButtonStyle(classicUI: true, palette: palette)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isEstimating || isSending || parsedAmountPiconero() == nil || !looksLikeAddress(toAddress))
+
+                            Button {
+                                showSendConfirmation = true
+                            } label: {
+                                HStack {
+                                    if isSending {
+                                        ProgressView().tint(palette.ctaText)
+                                    } else {
+                                        Image(systemName: "paperplane.fill")
+                                    }
+                                    Text(isSending ? "Sending..." : "Send")
+                                }
+                                .neonCTAStyle(classicUI: true, palette: palette)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isEstimating || isSending || !canSend())
+                        }
+                        .listRowBackground(Color.clear)
+
                         Button {
-                            Task { await estimateFee() }
+                            Task { await sendMax() }
                         } label: {
                             HStack {
-                                if isEstimating {
-                                    ProgressView()
-                                } else {
-                                    Image(systemName: "dollarsign.circle")
+                                Image(systemName: "arrow.up.circle")
+                                Text("Send Max")
+                            }
+                            .neonSecondaryButtonStyle(classicUI: true, palette: palette)
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(Color.clear)
+                        .disabled(isEstimating || isSending)
+                    } else {
+                        HStack(spacing: 12) {
+                            Button {
+                                Task { await estimateFee() }
+                            } label: {
+                                HStack {
+                                    if isEstimating {
+                                        ProgressView()
+                                    } else {
+                                        Image(systemName: "dollarsign.circle")
+                                    }
+                                    Text(isEstimating ? "Estimating..." : "Preview Fee")
                                 }
-                                Text(isEstimating ? "Estimating..." : "Preview Fee")
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isEstimating || isSending || parsedAmountPiconero() == nil || !looksLikeAddress(toAddress))
+
+                            Button {
+                                showSendConfirmation = true
+                            } label: {
+                                HStack {
+                                    if isSending {
+                                        ProgressView()
+                                    } else {
+                                        Image(systemName: "paperplane.fill")
+                                    }
+                                    Text(isSending ? "Sending..." : "Send")
+                                }
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isEstimating || isSending || !canSend())
+                        }
+
+                        Button {
+                            Task { await sendMax() }
+                        } label: {
+                            HStack {
+                                Image(systemName: "arrow.up.circle")
+                                Text("Send Max")
                             }
                             .frame(maxWidth: .infinity)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.bordered)
-                        .disabled(isEstimating || isSending || parsedAmountPiconero() == nil || !looksLikeAddress(toAddress))
-
-                        Button {
-                            showSendConfirmation = true
-                        } label: {
-                            HStack {
-                                if isSending {
-                                    ProgressView()
-                                } else {
-                                    Image(systemName: "paperplane.fill")
-                                }
-                                Text(isSending ? "Sending..." : "Send")
-                            }
-                            .frame(maxWidth: .infinity)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(isEstimating || isSending || !canSend())
+                        .disabled(isEstimating || isSending)
                     }
-
-                    Button {
-                        Task { await sendMax() }
-                    } label: {
-                        HStack {
-                            Image(systemName: "arrow.up.circle")
-                            Text("Send Max")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isEstimating || isSending)
                 }
 
                 Section {
-                    DisclosureGroup("Advanced") {
-                        Toggle("Send from specific subaddress", isOn: $sendFromSubaddressEnabled)
+                    NeonDisclosureGroup(
+                        title: classicUI ? "ADVANCED" : "Advanced",
+                        isExpanded: $showAdvanced
+                    ) {
+                        NeonToggle(title: "Send from specific subaddress", isOn: $sendFromSubaddressEnabled)
 
                         if sendFromSubaddressEnabled {
                             Picker("Subaddress", selection: $fromSubaddressMinor) {
@@ -225,26 +284,27 @@ struct SendView: View {
                                 }
                             }
                             .pickerStyle(.menu)
+                            .tint(classicPalette?.accent ?? .accentColor)
 
                             Text("This constrains inputs to account 0, subaddress \(fromSubaddressMinor).")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                         }
 
                         HStack {
-                            Text("Policy")
+                            NeonFormLabel(text: "Policy")
                             Spacer()
                             Text(policyText())
                                 .font(.system(.caption, design: .monospaced))
-                                .foregroundColor(.secondary)
+                                .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                         }
 
                         HStack {
-                            Text("Broadcast")
+                            NeonFormLabel(text: "Broadcast")
                             Spacer()
                             Text(MoneroConfig.broadcastNodeURL())
                                 .font(.system(.caption, design: .monospaced))
-                                .foregroundColor(.secondary)
+                                .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                         }
 
                         if (MoneroConfig.networkPolicy == .i2p || MoneroConfig.networkPolicy == .hybrid),
@@ -252,20 +312,22 @@ struct SendView: View {
                            !proxy.isEmpty
                         {
                             HStack {
-                                Text("I2P Proxy")
+                                NeonFormLabel(text: "I2P Proxy")
                                 Spacer()
                                 Text(proxy)
                                     .font(.system(.caption, design: .monospaced))
-                                    .foregroundColor(.secondary)
+                                    .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                             }
                         }
                     }
                 }
             }
-            .navigationTitle("Send XMR")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
+                ToolbarItem(placement: .principal) {
+                    Text(classicUI ? "SEND" : "Send XMR")
+                        .font(classicUI ? .system(.headline, design: .monospaced).weight(.bold) : .headline)
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -273,12 +335,17 @@ struct SendView: View {
                     } label: {
                         Image(systemName: "qrcode.viewfinder")
                     }
+                    .foregroundStyle(classicPalette?.accent ?? .accentColor)
                 }
             }
-            .fullScreenCover(isPresented: $showScanner) {
+            .neonFormChrome(classicUI: classicUI, palette: classicPalette)
+            .tint(classicPalette?.accent ?? .accentColor)
+            .sheet(isPresented: $showScanner) {
                 QRScannerView { code in
                     handleScannedCode(code)
                 }
+                .classicTheme(enabled: classicUI, colorScheme: colorScheme)
+                .presentationDragIndicator(.visible)
             }
         }
         .onAppear {
@@ -328,7 +395,8 @@ struct SendView: View {
     // MARK: - Actions
 
     private func estimateFee() async {
-        print("🧭 UI action: estimateFee tapped wallet_id=\(walletManager.getCurrentWalletId() ?? "(none)") isMaxMode=\(isMaxMode) sendFromSubaddressEnabled=\(sendFromSubaddressEnabled) fromSubaddressMinor=\(fromSubaddressMinor) amountXMR=\(amountXMR) toAddress_prefix=\(String(toAddress.prefix(12)))")
+        let walletId = await walletManager.getCurrentWalletId() ?? "(none)"
+        print("🧭 UI action: estimateFee tapped wallet_id=\(walletId) isMaxMode=\(isMaxMode) sendFromSubaddressEnabled=\(sendFromSubaddressEnabled) fromSubaddressMinor=\(fromSubaddressMinor) amountXMR=\(amountXMR) toAddress_prefix=\(String(toAddress.prefix(12)))")
 
         // Cancel any previous fee preview and start a new one.
         feePreviewTask?.cancel()
@@ -402,7 +470,8 @@ struct SendView: View {
     }
 
     private func performSend() async {
-        print("🧭 UI action: performSend tapped wallet_id=\(walletManager.getCurrentWalletId() ?? "(none)") isMaxMode=\(isMaxMode) sendFromSubaddressEnabled=\(sendFromSubaddressEnabled) fromSubaddressMinor=\(fromSubaddressMinor) amountXMR=\(amountXMR) previewReady=\(previewReady) feePiconero=\(estimatedFeePiconero.map(String.init) ?? "(nil)") toAddress_prefix=\(String(toAddress.prefix(12)))")
+        let walletId = await walletManager.getCurrentWalletId() ?? "(none)"
+        print("🧭 UI action: performSend tapped wallet_id=\(walletId) isMaxMode=\(isMaxMode) sendFromSubaddressEnabled=\(sendFromSubaddressEnabled) fromSubaddressMinor=\(fromSubaddressMinor) amountXMR=\(amountXMR) previewReady=\(previewReady) feePiconero=\(estimatedFeePiconero.map(String.init) ?? "(nil)") toAddress_prefix=\(String(toAddress.prefix(12)))")
 
         guard let ring = parsedRingLen(),
               looksLikeAddress(toAddress) else {
@@ -611,7 +680,7 @@ struct SendView: View {
         let destination = toAddress.isEmpty ? "Unknown address" : toAddress
         if let fee = estimatedFeePiconero, let amount = parsedAmountPiconero() {
             let total = safeAdd(amount, fee)
-            return "Send \(viewModel.formatXMR(viewModel.piconeroToXMR(amount))) to \(destination).\nFee: \(viewModel.formatXMR(viewModel.piconeroToXMR(fee)))\nTotal: \(viewModel.formatXMR(viewModel.piconeroToXMR(total)))"
+            return "Send \(viewModel.formatExactPiconero(amount)) to \(destination).\nFee: \(viewModel.formatExactPiconero(fee))\nTotal: \(viewModel.formatExactPiconero(total))"
         }
         return "Preview the fee before sending to \(destination)."
     }
@@ -619,7 +688,8 @@ struct SendView: View {
     // One-shot "Send Max": ask the core to compute the maximum sendable amount (unlocked - fee),
     // then fill the amount field so the confirmation dialog can use a previewed amount.
     private func sendMax() async {
-        print("🧭 UI action: sendMax tapped wallet_id=\(walletManager.getCurrentWalletId() ?? "(none)") isMaxMode=\(isMaxMode) sendFromSubaddressEnabled=\(sendFromSubaddressEnabled) fromSubaddressMinor=\(fromSubaddressMinor) amountXMR_before=\(amountXMR) toAddress_prefix=\(String(toAddress.prefix(12)))")
+        let walletId = await walletManager.getCurrentWalletId() ?? "(none)"
+        print("🧭 UI action: sendMax tapped wallet_id=\(walletId) isMaxMode=\(isMaxMode) sendFromSubaddressEnabled=\(sendFromSubaddressEnabled) fromSubaddressMinor=\(fromSubaddressMinor) amountXMR_before=\(amountXMR) toAddress_prefix=\(String(toAddress.prefix(12)))")
 
         // Cancel any previous sweep preview and start a new one.
         sweepPreviewTask?.cancel()

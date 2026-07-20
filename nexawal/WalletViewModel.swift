@@ -61,6 +61,7 @@ class WalletViewModel: ObservableObject {
     private var lastPollingUpdate: Date?
     private var scanRateWindowStart: Date?
     private var scanRateWindowScanned: UInt64?
+    private var lastScanProgressAt: Date?
     private var pendingSyncPollRestart: Bool = false
     private let pollingStagnationInterval: TimeInterval = 5.0
     private var needsRefreshRetryOnNextActive: Bool = false
@@ -131,6 +132,31 @@ class WalletViewModel: ObservableObject {
 
     func piconeroToXMR(_ piconero: UInt64) -> Double {
         Double(piconero) / 1_000_000_000_000.0
+    }
+
+    private func formatPiconero(_ piconero: UInt64, decimals: Int) -> String {
+        let clampedDecimals = min(max(decimals, 0), 12)
+        let whole = piconero / 1_000_000_000_000
+        let fractional = piconero % 1_000_000_000_000
+
+        if clampedDecimals == 0 {
+            return "\(whole) XMR"
+        }
+
+        let trimFactor = (0..<(12 - clampedDecimals)).reduce(UInt64(1)) { partial, _ in
+            partial * 10
+        }
+        let fractionalScaled = fractional / trimFactor
+        let fractionalString = String(format: "%0*llu", clampedDecimals, fractionalScaled)
+        return "\(whole).\(fractionalString) XMR"
+    }
+
+    func formatDisplayPiconero(_ piconero: UInt64) -> String {
+        formatPiconero(piconero, decimals: 6)
+    }
+
+    func formatExactPiconero(_ piconero: UInt64) -> String {
+        formatPiconero(piconero, decimals: 12)
     }
 
     func biometricAvailability() async -> (available: Bool, enrolled: Bool) {
@@ -250,14 +276,8 @@ class WalletViewModel: ObservableObject {
     }
 
     func formatXMR(_ amount: Double) -> String {
-        switch amount {
-        case let value where value >= 1.0:
-            return String(format: "%.4f XMR", value)
-        case let value where value >= 0.0001:
-            return String(format: "%.6f XMR", value)
-        default:
-            return String(format: "%.12f XMR", amount)
-        }
+        let piconero = UInt64(max(amount, 0) * 1_000_000_000_000.0)
+        return formatDisplayPiconero(piconero)
     }
 
     /// Best-effort snapshot for fast resume after backgrounding.
@@ -464,6 +484,7 @@ class WalletViewModel: ObservableObject {
                         allowAuthoritativeZero: self.isSynced
                     )
                 }
+                self.logObservedOutputsSummary(context: "refresh_done")
 
                 // Refresh transfer history at end of refresh (authoritative)
                 do {
@@ -660,6 +681,7 @@ class WalletViewModel: ObservableObject {
         lastPollingUpdate = Date()
         scanRateWindowStart = nil
         scanRateWindowScanned = nil
+        lastScanProgressAt = nil
         lastBalancePollAt = nil
         lastTransfersPollAt = nil
         syncStatusPollTask = Task { [weak self] in
@@ -678,10 +700,11 @@ class WalletViewModel: ObservableObject {
                             let prev = self.lastPollingStatus
                             let prevUpdate = self.lastPollingUpdate
                             if let prev = prev, let lastUpdate = prevUpdate {
-                                let dt = now.timeIntervalSince(lastUpdate)
                                 let db = status.lastScanned >= prev.lastScanned ? (status.lastScanned - prev.lastScanned) : 0
 
-                                if db > 0, dt >= 0.5 {
+                                if db > 0 {
+                                    self.lastScanProgressAt = now
+
                                     if self.scanRateWindowStart == nil || self.scanRateWindowScanned == nil {
                                         self.scanRateWindowStart = lastUpdate
                                         self.scanRateWindowScanned = prev.lastScanned
@@ -692,20 +715,15 @@ class WalletViewModel: ObservableObject {
                                         let windowDt = now.timeIntervalSince(windowStart)
                                         let windowDb = status.lastScanned >= windowScanned ? (status.lastScanned - windowScanned) : 0
 
-                                        if windowDb >= 10, windowDt >= 2.0 {
+                                        if windowDb > 0, windowDt >= 0.5 {
                                             self.scanBlocksPerSecond = Double(windowDb) / windowDt
-                                        } else if windowDt >= 8.0 {
-                                            self.scanBlocksPerSecond = Double(windowDb) / windowDt
-                                        } else {
-                                            self.scanBlocksPerSecond = 0.0
                                         }
-                                    } else {
+                                    }
+                                } else {
+                                    let staleRate = self.lastScanProgressAt.map { now.timeIntervalSince($0) > 1.5 } ?? true
+                                    if staleRate {
                                         self.scanBlocksPerSecond = 0.0
                                     }
-                                } else if db == 0 {
-                                    self.scanBlocksPerSecond = 0.0
-                                } else {
-                                    self.scanBlocksPerSecond = 0.0
                                 }
                             } else {
                                 self.scanBlocksPerSecond = 0.0
@@ -821,6 +839,10 @@ class WalletViewModel: ObservableObject {
                     self.syncStatusPollTask = nil
                     self.lastPollingStatus = nil
                     self.lastPollingUpdate = nil
+                    self.scanRateWindowStart = nil
+                    self.scanRateWindowScanned = nil
+                    self.lastScanProgressAt = nil
+                    self.scanBlocksPerSecond = 0.0
                     self.lastBalancePollAt = nil
                     self.lastTransfersPollAt = nil
                 }
@@ -833,6 +855,10 @@ class WalletViewModel: ObservableObject {
         syncStatusPollTask = nil
         lastPollingStatus = nil
         lastPollingUpdate = nil
+        scanRateWindowStart = nil
+        scanRateWindowScanned = nil
+        lastScanProgressAt = nil
+        scanBlocksPerSecond = 0.0
         pendingSyncPollRestart = false
     }
 
@@ -840,6 +866,7 @@ class WalletViewModel: ObservableObject {
         let normalizedChainHeight = max(status.chainHeight, status.restoreHeight, status.lastScanned)
         let normalizedRestoreHeight = min(status.restoreHeight, normalizedChainHeight)
         let normalizedLastScanned = min(max(status.lastScanned, normalizedRestoreHeight), normalizedChainHeight)
+        let tol: UInt64 = 3
 
         chainHeight = normalizedChainHeight
         if status.chainTime > 0 {
@@ -847,6 +874,9 @@ class WalletViewModel: ObservableObject {
         }
         restoreHeight = normalizedRestoreHeight
         lastScannedHeight = normalizedLastScanned
+        if normalizedChainHeight > 0 && normalizedLastScanned + tol >= normalizedChainHeight {
+            scanBlocksPerSecond = 0.0
+        }
     }
 
     private func applyMetadataSnapshot(_ metadata: StoredWalletMetadata) async {
@@ -1009,5 +1039,18 @@ class WalletViewModel: ObservableObject {
         totalBalance = total
         unlockedBalance = unlocked
         balanceIsStaleWhileSyncing = false
+    }
+
+    private func logObservedOutputsSummary(context: String) {
+        do {
+            let envelope = try WalletCoreFFIClient.observedOutputs(walletId: walletId)
+            let spentCount = envelope.outputs.filter(\.spent).count
+            let unspent = envelope.outputs.filter { !$0.spent }
+            let unspentTotal = unspent.reduce(UInt64(0)) { $0 &+ $1.amount }
+            let unlockedUnspentTotal = unspent.filter(\.unlocked).reduce(UInt64(0)) { $0 &+ $1.amount }
+            print("🧾 outputs_summary context=\(context) wallet_id=\(walletId) rows=\(envelope.outputs.count) spent=\(spentCount) unspent=\(unspent.count) unspent_total=\(unspentTotal) unlocked_unspent_total=\(unlockedUnspentTotal)")
+        } catch {
+            print("⚠️ outputs_summary_failed context=\(context) wallet_id=\(walletId) error=\(error.localizedDescription)")
+        }
     }
 }

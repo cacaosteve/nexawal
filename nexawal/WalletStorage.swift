@@ -257,8 +257,8 @@ actor WalletStorage {
         let context = LAContext()
 
         if metadata.biometricsEnabled {
+            context.localizedReason = prompt
             query[kSecUseAuthenticationContext as String] = context
-            query[kSecUseOperationPrompt as String] = prompt
         }
 
         var result: CFTypeRef?
