@@ -375,12 +375,18 @@ struct SendView: View {
             titleVisibility: .visible
         ) {
             Button("Confirm Send") {
+                guard !isSending else { return }
+                // Disable immediately so dismiss+Task cannot race a second send.
+                isSending = true
+                showSendConfirmation = false
                 Task {
                     await performSend()
                 }
             }
+            .disabled(isSending)
             Button("Cancel", role: .cancel) {
             }
+            .disabled(isSending)
         } message: {
             Text(confirmationMessage())
         }
@@ -474,6 +480,9 @@ struct SendView: View {
         let walletId = await walletManager.getCurrentWalletId() ?? "(none)"
         print("🧭 UI action: performSend tapped wallet_id=\(walletId) isMaxMode=\(isMaxMode) sendFromSubaddressEnabled=\(sendFromSubaddressEnabled) fromSubaddressMinor=\(fromSubaddressMinor) amountXMR=\(amountXMR) previewReady=\(previewReady) feePiconero=\(estimatedFeePiconero.map(String.init) ?? "(nil)") toAddress_prefix=\(String(toAddress.prefix(12)))")
 
+        // Confirm sets isSending before launching this task; always clear on exit.
+        defer { isSending = false }
+
         guard let ring = parsedRingLen(),
               looksLikeAddress(toAddress) else {
             errorMessage = "Enter a valid address and amount."
@@ -513,7 +522,6 @@ struct SendView: View {
             } else {
                 guard let amountPico = parsedAmountPiconero() else {
                     errorMessage = "Enter a valid address and amount."
-                    isSending = false
                     return
                 }
 
@@ -527,12 +535,10 @@ struct SendView: View {
                         unlockedPiconero: available
                     ) {
                         errorMessage = "Insufficient unlocked balance for amount + fee."
-                        isSending = false
                         return
                     }
                 } else if amountPico > available {
                     errorMessage = "Insufficient unlocked balance."
-                    isSending = false
                     return
                 }
 
@@ -561,8 +567,6 @@ struct SendView: View {
         } catch {
             errorMessage = "Send failed: \(error.localizedDescription)"
         }
-
-        isSending = false
     }
 
     // MARK: - Helpers
