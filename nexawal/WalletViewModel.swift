@@ -80,6 +80,9 @@ class WalletViewModel: ObservableObject {
         chainHeight > restoreHeight || chainTime > 0
     }
 
+    /// UI-facing tip observation (same rule as sync honesty).
+    var hasObservedNetworkTipForUI: Bool { hasObservedNetworkTip }
+
     var syncProgress: Double {
         let tol: UInt64 = 3
         guard hasObservedNetworkTip else {
@@ -113,7 +116,9 @@ class WalletViewModel: ObservableObject {
     }
 
     var isSynced: Bool {
-        guard hasObservedNetworkTip else {
+        // Tip must be a real daemon height (not preflight chainHeight ≈ restoreHeight),
+        // scanned within tolerance of tip, and not mid-refresh.
+        guard hasObservedNetworkTip, !isRefreshing else {
             return false
         }
         let tol: UInt64 = 3

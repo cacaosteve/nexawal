@@ -7,6 +7,7 @@ struct ReceiveView: View {
     @State private var amountInput: String = ""
     @State private var descriptionInput: String = ""
     @State private var showCopyConfirmation: Bool = false
+    @State private var copyConfirmationText: String = "Address copied to clipboard"
     @State private var showShareSheet: Bool = false
 
     // Subaddress UI
@@ -245,6 +246,10 @@ struct ReceiveView: View {
         .cornerRadius(classicUI ? 4 : 16)
     }
 
+    private var hasPaymentAmount: Bool {
+        sanitizedAmountString != nil
+    }
+
     private var actionSection: some View {
         VStack(spacing: 12) {
             if classicUI, let palette = classicPalette {
@@ -253,6 +258,14 @@ struct ReceiveView: View {
                         .neonCTAStyle(classicUI: true, palette: palette)
                 }
                 .buttonStyle(.plain)
+
+                if hasPaymentAmount {
+                    Button(action: copyPaymentURI) {
+                        Label("Copy Payment URI", systemImage: "link")
+                            .neonSecondaryButtonStyle(classicUI: true, palette: palette)
+                    }
+                    .buttonStyle(.plain)
+                }
 
                 if #available(iOS 16.0, *) {
                     ShareLink(item: moneroURI) {
@@ -276,6 +289,14 @@ struct ReceiveView: View {
                 }
                 .buttonStyle(.borderedProminent)
 
+                if hasPaymentAmount {
+                    Button(action: copyPaymentURI) {
+                        Label("Copy Payment URI", systemImage: "link")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+
                 if #available(iOS 16.0, *) {
                     ShareLink(item: moneroURI) {
                         Label("Share Payment Link", systemImage: "square.and.arrow.up")
@@ -296,7 +317,7 @@ struct ReceiveView: View {
     }
 
     private var copyConfirmation: some View {
-        Text("Address copied to clipboard")
+        Text(copyConfirmationText)
             .font(classicUI ? .system(.footnote, design: .monospaced) : .footnote)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -346,7 +367,22 @@ struct ReceiveView: View {
     }
 
     private func copyAddress() {
-        UIPasteboard.general.string = viewModel.currentReceiveAddress()
+        flashCopyConfirmation(
+            text: viewModel.currentReceiveAddress(),
+            message: "Address copied to clipboard"
+        )
+    }
+
+    private func copyPaymentURI() {
+        flashCopyConfirmation(
+            text: moneroURI,
+            message: "Payment URI copied to clipboard"
+        )
+    }
+
+    private func flashCopyConfirmation(text: String, message: String) {
+        UIPasteboard.general.string = text
+        copyConfirmationText = message
         withAnimation {
             showCopyConfirmation = true
         }

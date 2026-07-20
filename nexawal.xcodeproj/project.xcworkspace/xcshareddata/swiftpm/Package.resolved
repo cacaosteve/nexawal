@@ -1,0 +1,15 @@
+{
+  "originHash" : "cb38ba6cc5477b94beeadd11e230da8afb659c8ee14b58579553e97636710864",
+  "pins" : [
+    {
+      "identity" : "monerowalletcoreffi",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/cacaosteve/MoneroWalletCoreFFI.git",
+      "state" : {
+        "branch" : "walletcore/aligned-2026-07-18",
+        "revision" : "0b8a23bf9014f49a222f91b4b7b7f479df637d30"
+      }
+    }
+  ],
+  "version" : 3
+}

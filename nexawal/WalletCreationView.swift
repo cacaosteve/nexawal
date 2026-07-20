@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import MoneroWalletCoreFFI
 
 struct WalletCreationView: View {
     @ObservedObject var viewModel: WalletViewModel
@@ -22,7 +23,15 @@ struct WalletCreationView: View {
         var id: String { rawValue }
     }
 
-
+    // Create-mode seed backup gate: the app generates the mnemonic (never a user paste),
+    // forces an explicit "I wrote it down" confirmation, then re-checks a few random words
+    // before Create is enabled.
+    @State private var generatedMnemonic: String = ""
+    @State private var wroteSeedDown: Bool = false
+    @State private var seedChallengeIndices: [Int] = []
+    @State private var seedChallengeAnswers: [String] = ["", "", ""]
+    @State private var seedGenerationError: String?
+    @FocusState private var focusedChallengeIndex: Int?
 
     @State private var setupMode: WalletSetupMode = .import
 
@@ -57,12 +66,17 @@ struct WalletCreationView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    TextEditor(text: $mnemonicInput)
-                        .frame(minHeight: 120)
-                        .font(.system(.body, design: .monospaced))
-                        .focused($isMnemonicFocused)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
+                    switch setupMode {
+                    case .create:
+                        seedBackupGateView
+                    case .import:
+                        TextEditor(text: $mnemonicInput)
+                            .frame(minHeight: 120)
+                            .font(.system(.body, design: .monospaced))
+                            .focused($isMnemonicFocused)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
 
                     // Restore height controls:
                     // - Create mode: hide the editable field (fast restore height is applied automatically when restoreHeightInput == 0)
@@ -182,10 +196,10 @@ struct WalletCreationView: View {
                                     ProgressView()
                                         .progressViewStyle(CircularProgressViewStyle())
                                 }
-                                Text(viewModel.isLoading ? "Importing Wallet..." : "Create Wallet")
+                                Text(viewModel.isLoading ? "Creating Wallet..." : "Create Wallet")
                             }
                         }
-                        .disabled(viewModel.isLoading || mnemonicInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(viewModel.isLoading || !isSeedBackupGatePassed())
                     }
                 }
                 .alert("Replace existing wallet?", isPresented: $showReplaceConfirm) {
@@ -240,13 +254,150 @@ struct WalletCreationView: View {
             // Best-effort: fetch suggested restore height for create mode.
             // This is UI-only guidance; actual application happens in createOrImport().
             await refreshSuggestedRestoreHeightIfNeeded()
+
+            if setupMode == .create {
+                generateNewSeed()
+            }
         }
         .onChange(of: setupMode) {
             Task { await refreshSuggestedRestoreHeightIfNeeded() }
+            if setupMode == .create, generatedMnemonic.isEmpty {
+                generateNewSeed()
+            }
         }
         .onChange(of: isMainnet) {
             Task { await refreshSuggestedRestoreHeightIfNeeded() }
         }
+    }
+
+    // MARK: - Create-mode seed backup gate
+
+    @ViewBuilder
+    private var seedBackupGateView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("This is your recovery seed. Write it down on paper and store it somewhere safe. Anyone with these words can access your funds — nexawal never uploads or backs it up for you.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            mnemonicWordGrid
+
+            if let seedGenerationError {
+                Text(seedGenerationError)
+                    .font(.caption)
+                    .foregroundColor(classicPalette?.danger ?? .red)
+            }
+
+            Button(action: { generateNewSeed() }) {
+                Text("Generate new seed")
+            }
+            .disabled(viewModel.isLoading)
+
+            NeonToggle(title: "I wrote down my recovery seed", isOn: $wroteSeedDown)
+                .disabled(generatedMnemonic.isEmpty)
+
+            if wroteSeedDown {
+                seedChallengeView
+            }
+        }
+    }
+
+    private var mnemonicWordGrid: some View {
+        let words = generatedMnemonic.split(separator: " ").map(String.init)
+        return LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+            ForEach(Array(words.enumerated()), id: \.offset) { index, word in
+                HStack(spacing: 4) {
+                    Text("\(index + 1).")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .frame(width: 24, alignment: .trailing)
+                    Text(word)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundColor(classicPalette?.primaryText ?? .primary)
+                }
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+        .textSelection(.disabled)
+    }
+
+    private var seedChallengeView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Confirm you wrote it down: enter the requested words below.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            ForEach(Array(seedChallengeIndices.enumerated()), id: \.offset) { i, wordIndex in
+                HStack {
+                    Text("Word #\(wordIndex + 1):")
+                        .font(.system(.body, design: .monospaced))
+                    TextField("", text: challengeBinding(for: i))
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .font(.system(.body, design: .monospaced))
+                        .focused($focusedChallengeIndex, equals: i)
+                }
+            }
+
+            if !seedChallengeIndices.isEmpty, !allChallengesMatch() {
+                Text("Word(s) don't match yet.")
+                    .font(.caption)
+                    .foregroundColor(classicPalette?.danger ?? .red)
+            }
+        }
+    }
+
+    private func challengeBinding(for index: Int) -> Binding<String> {
+        Binding(
+            get: { seedChallengeAnswers.indices.contains(index) ? seedChallengeAnswers[index] : "" },
+            set: { newValue in
+                guard seedChallengeAnswers.indices.contains(index) else { return }
+                seedChallengeAnswers[index] = newValue
+            }
+        )
+    }
+
+    private func generateNewSeed() {
+        seedGenerationError = nil
+        do {
+            generatedMnemonic = try WalletCoreFFIClient.generateMnemonicEnglish()
+        } catch {
+            generatedMnemonic = ""
+            seedGenerationError = "Couldn’t generate a seed: \(error.localizedDescription)"
+        }
+        wroteSeedDown = false
+        seedChallengeAnswers = ["", "", ""]
+        regenerateChallenges()
+    }
+
+    private func regenerateChallenges() {
+        let wordCount = generatedMnemonic.split(separator: " ").count
+        guard wordCount >= 3 else {
+            seedChallengeIndices = []
+            return
+        }
+        var indices = Set<Int>()
+        while indices.count < 3 {
+            indices.insert(Int.random(in: 0..<wordCount))
+        }
+        seedChallengeIndices = indices.sorted()
+        seedChallengeAnswers = ["", "", ""]
+    }
+
+    private func allChallengesMatch() -> Bool {
+        let words = generatedMnemonic.split(separator: " ").map(String.init)
+        guard !seedChallengeIndices.isEmpty, seedChallengeIndices.count == seedChallengeAnswers.count else { return false }
+        for (i, wordIndex) in seedChallengeIndices.enumerated() {
+            guard words.indices.contains(wordIndex) else { return false }
+            let expected = words[wordIndex].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let actual = seedChallengeAnswers[i].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !actual.isEmpty, actual == expected else { return false }
+        }
+        return true
+    }
+
+    private func isSeedBackupGatePassed() -> Bool {
+        !generatedMnemonic.isEmpty && wroteSeedDown && allChallengesMatch()
     }
 
     private func createOrImport(isReplace: Bool) async {
@@ -262,16 +413,18 @@ struct WalletCreationView: View {
             return rawHeight
         }()
 
+        let effectiveMnemonic = (setupMode == .create) ? generatedMnemonic : mnemonicInput
+
         if isReplace {
             await viewModel.replaceWallet(
-                mnemonic: mnemonicInput,
+                mnemonic: effectiveMnemonic,
                 restoreHeight: effectiveHeight,
                 mainnet: isMainnet,
                 requireBiometrics: requireBiometrics
             )
         } else {
             await viewModel.createWallet(
-                mnemonic: mnemonicInput,
+                mnemonic: effectiveMnemonic,
                 restoreHeight: effectiveHeight,
                 mainnet: isMainnet,
                 requireBiometrics: requireBiometrics

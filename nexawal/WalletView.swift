@@ -110,7 +110,9 @@ struct WalletView: View {
     {
         items.sorted { a, b in
             // Pending first
-            if a.isPending != b.isPending { return a.isPending && !b.isPending }
+            let aPending = a.isPending || a.confirmations == 0
+            let bPending = b.isPending || b.confirmations == 0
+            if aPending != bPending { return aPending && !bPending }
 
             // Then by height desc (unknown height treated as 0)
             let ah = a.height ?? 0
@@ -129,9 +131,11 @@ struct WalletView: View {
 
     private func syncHeadline() -> String {
         let text: String
-        if viewModel.isSynced {
+        if let error = viewModel.errorMessage, !error.isEmpty, !viewModel.isRefreshing {
+            text = "Node unreachable"
+        } else if viewModel.isSynced {
             text = "Wallet synced"
-        } else if viewModel.chainHeight == 0 {
+        } else if !viewModel.hasObservedNetworkTipForUI {
             text = "Connecting to node"
         } else if viewModel.lastScannedHeight == viewModel.restoreHeight {
             text = "Scanning blockchain"
@@ -142,10 +146,15 @@ struct WalletView: View {
     }
 
     private func syncDetail() -> String {
+        if let error = viewModel.errorMessage, !error.isEmpty, !viewModel.isRefreshing {
+            let trimmed = error.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.count <= 120 { return trimmed }
+            return String(trimmed.prefix(117)) + "…"
+        }
         if viewModel.isSynced {
             return "Scanned to block \(viewModel.lastScannedHeight)"
         }
-        if viewModel.chainHeight == 0 {
+        if !viewModel.hasObservedNetworkTipForUI {
             return "Waiting for network height"
         }
         if viewModel.lastScannedHeight == viewModel.restoreHeight {
@@ -252,7 +261,11 @@ struct WalletView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 8) {
                                 Circle()
-                                    .fill(viewModel.isSynced ? (classicPalette?.success ?? .green) : (classicPalette?.accent ?? .orange))
+                                    .fill(
+                                        (viewModel.errorMessage?.isEmpty == false && !viewModel.isRefreshing)
+                                            ? (classicPalette?.danger ?? .red)
+                                            : (viewModel.isSynced ? (classicPalette?.success ?? .green) : (classicPalette?.accent ?? .orange))
+                                    )
                                     .frame(width: 10, height: 10)
                                 Text(syncHeadline())
                                     .font(classicUI ? .system(.headline, design: .monospaced) : .headline)
@@ -328,7 +341,7 @@ struct WalletView: View {
                                                             .foregroundColor(secondaryText)
                                                             .accessibilityLabel(formatTransferTimestampAbsolute(t) ?? ts)
                                                     }
-                                                    Text(t.isPending ? (classicUI ? "PENDING" : "Pending") : "\(t.confirmations) conf")
+                                                    Text((t.isPending || t.confirmations == 0) ? (classicUI ? "PENDING" : "Pending") : "\(t.confirmations) conf")
                                                         .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
                                                         .foregroundColor(secondaryText)
                                                 }
@@ -386,7 +399,7 @@ struct WalletView: View {
                                                     HStack {
                                                         Text("Status")
                                                         Spacer()
-                                                        Text(t.isPending ? "Pending" : "Confirmed")
+                                                        Text((t.isPending || t.confirmations == 0) ? "Pending" : "Confirmed")
                                                             .font(
                                                                 .system(
                                                                     .caption, design: .monospaced)
@@ -472,6 +485,17 @@ struct WalletView: View {
                                                             Spacer()
                                                             Image(systemName: "doc.on.doc")
                                                                 .foregroundColor(.secondary)
+                                                        }
+                                                    }
+
+                                                    if let explorerURL = URL(string: "https://xmrchain.net/tx/\(t.txid)") {
+                                                        Link(destination: explorerURL) {
+                                                            HStack {
+                                                                Text("Open in Explorer")
+                                                                Spacer()
+                                                                Image(systemName: "safari")
+                                                                    .foregroundColor(.secondary)
+                                                            }
                                                         }
                                                     }
                                                 }

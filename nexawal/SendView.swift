@@ -565,7 +565,21 @@ struct SendView: View {
             await viewModel.updateBalance()
             await refreshSubaddressBalanceIfNeeded()
         } catch {
-            errorMessage = "Send failed: \(error.localizedDescription)"
+            errorMessage = authRetryMessage(for: error) ?? "Send failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// If `error` is an auth-related `WalletStorageError`, return a clear retry message.
+    /// Otherwise return nil so the caller falls back to the generic "Send failed" message.
+    private func authRetryMessage(for error: Error) -> String? {
+        switch error {
+        case WalletStorageError.cancelled,
+             WalletStorageError.biometryNotAvailable,
+             WalletStorageError.biometryNotEnrolled,
+             WalletStorageError.authenticationFailed:
+            return "Authentication required to send. Try again."
+        default:
+            return nil
         }
     }
 
