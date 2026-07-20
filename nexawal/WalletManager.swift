@@ -884,8 +884,12 @@ actor WalletManager {
             applyBroadcastProxy()
 
             let endpoint = MoneroConfig.broadcastNodeURL()
+            try completePendingPreparedSend(for: walletId, preferredNodeURL: endpoint)
+
+            let prepared: WalletCoreFFIClient.PreparedSend
+            let usedEndpoint: String
             do {
-                return try sweepWithFilterOptionalSiblingFallback(
+                (prepared, usedEndpoint) = try prepareSweepWithFilterOptionalSiblingFallback(
                     walletId: walletId,
                     nodeURL: endpoint,
                     ringLen: ringLen,
@@ -894,9 +898,16 @@ actor WalletManager {
                 )
             } catch {
                 let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
-                print("❌ Sweep (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+                print("❌ Prepare sweep (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
                 throw error
             }
+
+            return try persistAndRelayPrepared(
+                walletId: walletId,
+                usedEndpoint: usedEndpoint,
+                prepared: prepared,
+                logLabel: "sweep subaddr \(fromSubaddressMinor)"
+            )
         }
     }
 
@@ -914,9 +925,13 @@ actor WalletManager {
             applyBroadcastProxy()
 
             let endpoint = MoneroConfig.broadcastNodeURL()
+            try completePendingPreparedSend(for: walletId, preferredNodeURL: endpoint)
+
             let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
+            let prepared: WalletCoreFFIClient.PreparedSend
+            let usedEndpoint: String
             do {
-                return try sendWithFilterOptionalSiblingFallback(
+                (prepared, usedEndpoint) = try prepareSendWithFilterOptionalSiblingFallback(
                     walletId: walletId,
                     nodeURL: endpoint,
                     ringLen: ringLen,
@@ -925,9 +940,17 @@ actor WalletManager {
                 )
             } catch {
                 let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
-                print("❌ Send (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+                print("❌ Prepare send (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
                 throw error
             }
+
+            let result = try persistAndRelayPrepared(
+                walletId: walletId,
+                usedEndpoint: usedEndpoint,
+                prepared: prepared,
+                logLabel: "send subaddr \(fromSubaddressMinor)"
+            )
+            return (txid: result.txid, fee: result.fee)
         }
     }
 
@@ -990,9 +1013,12 @@ actor WalletManager {
                 print("📤 Sweep start: ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
             }
 
-            let res: (txid: String, amount: UInt64, fee: UInt64)
+            try completePendingPreparedSend(for: walletId, preferredNodeURL: endpoint)
+
+            let prepared: WalletCoreFFIClient.PreparedSend
+            let usedEndpoint: String
             do {
-                res = try sweepOptionalSiblingFallback(
+                (prepared, usedEndpoint) = try prepareSweepOptionalSiblingFallback(
                     walletId: walletId,
                     nodeURL: endpoint,
                     ringLen: ringLen,
@@ -1000,27 +1026,25 @@ actor WalletManager {
                 )
             } catch {
                 let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
-                print("❌ Sweep failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+                print("❌ Prepare sweep failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
                 throw error
             }
 
-            let amountXMR = Double(res.amount) / 1_000_000_000_000.0
-            let feeXMR = Double(res.fee) / 1_000_000_000_000.0
-            print("✅ Swept txid=\(res.txid), amount=\(res.amount) piconero (\(String(format: "%.12f", amountXMR)) XMR), fee=\(res.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR) via \(policy) endpoint \(endpoint)")
-
-            // Persist immediately so pending-outgoing survives app restart/rebuild before next refresh.
-            exportCacheAndPersist(for: walletId)
-            print("🗂️ Cache export reason: sweep walletId=\(walletId)")
-
-            return res
+            let result = try persistAndRelayPrepared(
+                walletId: walletId,
+                usedEndpoint: usedEndpoint,
+                prepared: prepared,
+                logLabel: "sweep"
+            )
+            print("✅ Swept txid=\(result.txid), amount=\(result.amount) piconero, fee=\(result.fee) piconero via \(policy) endpoint \(usedEndpoint)")
+            return result
         }
     }
 
     /// Send to a single destination honoring broadcast policy (clearnet, I2P, or hybrid).
     ///
-    /// Exact (unfiltered) sends use prepare → durable persist → relay so a crash between
-    /// signing and broadcast can be retried idempotently. Filtered / sweep paths still use
-    /// fire-and-forget send (no prepare-with-filter / prepare-sweep in the core ABI yet).
+    /// Exact / filtered / sweep sends all use prepare → durable persist → relay so a crash
+    /// between signing and broadcast can be retried idempotently.
     func send(toAddress: String, amountPiconero: UInt64, ringLen: UInt8 = 16) throws -> (txid: String, fee: UInt64) {
         try withSendLock {
             guard let walletId = currentWalletId else {
@@ -1085,6 +1109,33 @@ actor WalletManager {
 
             return (txid: relay.txid, fee: prepared.fee)
         }
+    }
+
+    /// Persist a prepared payload, relay it, clear the durable file, and export cache.
+    private func persistAndRelayPrepared(
+        walletId: String,
+        usedEndpoint: String,
+        prepared: WalletCoreFFIClient.PreparedSend,
+        logLabel: String
+    ) throws -> (txid: String, amount: UInt64, fee: UInt64) {
+        try persistPendingPrepared(for: walletId, nodeURL: usedEndpoint, prepared: prepared)
+        let relay: WalletCoreFFIClient.RelayResult
+        do {
+            relay = try WalletCoreFFIClient.relayPrepared(
+                walletId: walletId,
+                prepared: prepared,
+                nodeURL: usedEndpoint
+            )
+        } catch {
+            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+            print("❌ Relay prepared (\(logLabel)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+            throw error
+        }
+        clearPendingPrepared(for: walletId)
+        print("✅ \(logLabel) relayed txid=\(relay.txid) status=\(relay.status) fee=\(prepared.fee)")
+        exportCacheAndPersist(for: walletId)
+        print("🗂️ Cache export reason: \(logLabel) walletId=\(walletId)")
+        return (txid: relay.txid, amount: prepared.amount, fee: prepared.fee)
     }
 
     private func siblingMonerodURLIfNeeded(for endpoint: String) -> String? {
@@ -1269,96 +1320,102 @@ actor WalletManager {
         }
     }
 
-    private func sendWithFilterOptionalSiblingFallback(
+    private func prepareSendWithFilterOptionalSiblingFallback(
         walletId: String,
         nodeURL: String,
         ringLen: UInt8,
         destinations: [WalletCoreFFIClient.Destination],
         filter: [String: Any]
-    ) throws -> (txid: String, fee: UInt64) {
+    ) throws -> (WalletCoreFFIClient.PreparedSend, String) {
         do {
-            return try WalletCoreFFIClient.sendWithFilter(
+            let prepared = try WalletCoreFFIClient.prepareSendWithFilter(
                 walletId: walletId,
                 destinations: destinations,
                 filter: filter,
                 ringLen: ringLen,
                 nodeURL: nodeURL
             )
+            return (prepared, nodeURL)
         } catch {
             let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
             guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
                 throw error
             }
 
-            print("↩️ Send (filtered) retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
-            return try WalletCoreFFIClient.sendWithFilter(
+            print("↩️ Prepare send (filtered) retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            let prepared = try WalletCoreFFIClient.prepareSendWithFilter(
                 walletId: walletId,
                 destinations: destinations,
                 filter: filter,
                 ringLen: ringLen,
                 nodeURL: fallbackURL
             )
+            return (prepared, fallbackURL)
         }
     }
 
-    private func sweepOptionalSiblingFallback(
+    private func prepareSweepOptionalSiblingFallback(
         walletId: String,
         nodeURL: String,
         ringLen: UInt8,
         toAddress: String
-    ) throws -> (txid: String, amount: UInt64, fee: UInt64) {
+    ) throws -> (WalletCoreFFIClient.PreparedSend, String) {
         do {
-            return try WalletCoreFFIClient.sweep(
+            let prepared = try WalletCoreFFIClient.prepareSweep(
                 walletId: walletId,
                 toAddress: toAddress,
                 ringLen: ringLen,
                 nodeURL: nodeURL
             )
+            return (prepared, nodeURL)
         } catch {
             let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
             guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
                 throw error
             }
 
-            print("↩️ Sweep retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
-            return try WalletCoreFFIClient.sweep(
+            print("↩️ Prepare sweep retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            let prepared = try WalletCoreFFIClient.prepareSweep(
                 walletId: walletId,
                 toAddress: toAddress,
                 ringLen: ringLen,
                 nodeURL: fallbackURL
             )
+            return (prepared, fallbackURL)
         }
     }
 
-    private func sweepWithFilterOptionalSiblingFallback(
+    private func prepareSweepWithFilterOptionalSiblingFallback(
         walletId: String,
         nodeURL: String,
         ringLen: UInt8,
         toAddress: String,
         filter: [String: Any]
-    ) throws -> (txid: String, amount: UInt64, fee: UInt64) {
+    ) throws -> (WalletCoreFFIClient.PreparedSend, String) {
         do {
-            return try WalletCoreFFIClient.sweepWithFilter(
+            let prepared = try WalletCoreFFIClient.prepareSweepWithFilter(
                 walletId: walletId,
                 toAddress: toAddress,
                 filter: filter,
                 ringLen: ringLen,
                 nodeURL: nodeURL
             )
+            return (prepared, nodeURL)
         } catch {
             let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
             guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
                 throw error
             }
 
-            print("↩️ Sweep (filtered) retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
-            return try WalletCoreFFIClient.sweepWithFilter(
+            print("↩️ Prepare sweep (filtered) retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            let prepared = try WalletCoreFFIClient.prepareSweepWithFilter(
                 walletId: walletId,
                 toAddress: toAddress,
                 filter: filter,
                 ringLen: ringLen,
                 nodeURL: fallbackURL
             )
+            return (prepared, fallbackURL)
         }
     }
 }
