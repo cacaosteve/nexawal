@@ -4,8 +4,18 @@
 
 - iOS app: this repository
 - Android app: [nexawal-android](https://github.com/cacaosteve/nexawal-android)
-- Rust wallet core / Swift package: [MoneroWalletCoreFFI](https://github.com/cacaosteve/MoneroWalletCoreFFI)
+- Rust wallet core / Swift package: [MoneroWalletCoreFFI](https://github.com/cacaosteve/MoneroWalletCoreFFI) (`walletcore/aligned-2026-07-18`)
 - Monero library work: [monero-oxide](https://github.com/cacaosteve/monero-oxide)
+
+## Setup
+
+```bash
+git clone https://github.com/cacaosteve/nexawal.git
+cd nexawal
+open nexawal.xcodeproj
+```
+
+Xcode resolves `MoneroWalletCoreFFI` from GitHub on branch `walletcore/aligned-2026-07-18` (prebuilt xcframework — no Rust/NDK required). Use **File → Packages → Update to Latest Package Versions** to move to the tip of that branch.
 
 ## Screenshots
 
