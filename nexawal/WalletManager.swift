@@ -115,6 +115,7 @@ actor WalletManager {
             currentWalletId = walletId
             cachedBalance = nil // Clear cached balance
             importCacheIfPresent(for: walletId)
+            recoverPendingPreparedSendBestEffort(for: walletId)
         } catch {
             throw WalletError.walletOpenFailed(error.localizedDescription)
         }
@@ -582,6 +583,76 @@ actor WalletManager {
         cacheDirectoryURL().appendingPathComponent("\(walletId).cache")
     }
 
+    /// Durable prepared-send payload so relay can resume after a crash mid-broadcast.
+    private func preparedFileURL(for walletId: String) -> URL {
+        cacheDirectoryURL().appendingPathComponent("\(walletId).prepared.json")
+    }
+
+    private struct PendingPreparedEnvelope: Codable {
+        let nodeURL: String
+        let prepared: WalletCoreFFIClient.PreparedSend
+        let createdAt: Date
+    }
+
+    private func persistPendingPrepared(
+        for walletId: String,
+        nodeURL: String,
+        prepared: WalletCoreFFIClient.PreparedSend
+    ) throws {
+        try ensureCacheDirectory()
+        let envelope = PendingPreparedEnvelope(nodeURL: nodeURL, prepared: prepared, createdAt: Date())
+        let data = try JSONEncoder().encode(envelope)
+        let fileURL = preparedFileURL(for: walletId)
+        try data.write(to: fileURL, options: .atomic)
+        try excludeFromBackup(url: fileURL)
+        print("🗂️ Persisted prepared send txid=\(prepared.txid) to \(fileURL.lastPathComponent)")
+    }
+
+    private func clearPendingPrepared(for walletId: String) {
+        let fileURL = preparedFileURL(for: walletId)
+        try? FileManager.default.removeItem(at: fileURL)
+        print("🗂️ Cleared prepared send file \(fileURL.lastPathComponent)")
+    }
+
+    private func loadPendingPrepared(for walletId: String) -> PendingPreparedEnvelope? {
+        let fileURL = preparedFileURL(for: walletId)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: fileURL)
+            return try JSONDecoder().decode(PendingPreparedEnvelope.self, from: data)
+        } catch {
+            print("⚠️ Failed to decode prepared send file: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// If a prepared payload is on disk, relay it (idempotent) before any new prepare.
+    private func completePendingPreparedSend(for walletId: String, preferredNodeURL: String) throws {
+        guard let pending = loadPendingPrepared(for: walletId) else { return }
+        applyBroadcastProxy()
+        let endpoint = pending.nodeURL.isEmpty ? preferredNodeURL : pending.nodeURL
+        print("↩️ Recovering pending prepared send txid=\(pending.prepared.txid) via \(endpoint)")
+        let relay = try WalletCoreFFIClient.relayPrepared(
+            walletId: walletId,
+            prepared: pending.prepared,
+            nodeURL: endpoint
+        )
+        clearPendingPrepared(for: walletId)
+        exportCacheAndPersist(for: walletId)
+        print("✅ Recovered pending prepared send txid=\(relay.txid) status=\(relay.status)")
+    }
+
+    private func recoverPendingPreparedSendBestEffort(for walletId: String) {
+        do {
+            try completePendingPreparedSend(
+                for: walletId,
+                preferredNodeURL: MoneroConfig.broadcastNodeURL()
+            )
+        } catch {
+            print("⚠️ Pending prepared send recovery deferred: \(error.localizedDescription)")
+        }
+    }
+
     /// Ensure the cache directory exists and is excluded from backups.
     private func ensureCacheDirectory() throws {
         let fm = FileManager.default
@@ -946,6 +1017,10 @@ actor WalletManager {
     }
 
     /// Send to a single destination honoring broadcast policy (clearnet, I2P, or hybrid).
+    ///
+    /// Exact (unfiltered) sends use prepare → durable persist → relay so a crash between
+    /// signing and broadcast can be retried idempotently. Filtered / sweep paths still use
+    /// fire-and-forget send (no prepare-with-filter / prepare-sweep in the core ABI yet).
     func send(toAddress: String, amountPiconero: UInt64, ringLen: UInt8 = 16) throws -> (txid: String, fee: UInt64) {
         try withSendLock {
             guard let walletId = currentWalletId else {
@@ -966,9 +1041,13 @@ actor WalletManager {
                 print("📤 Send start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
             }
 
-            let result: (txid: String, fee: UInt64)
+            // Finish any prior prepared payload before constructing a new one (shared inputs).
+            try completePendingPreparedSend(for: walletId, preferredNodeURL: endpoint)
+
+            let prepared: WalletCoreFFIClient.PreparedSend
+            let usedEndpoint: String
             do {
-                result = try sendOptionalSiblingFallback(
+                (prepared, usedEndpoint) = try prepareOptionalSiblingFallback(
                     walletId: walletId,
                     nodeURL: endpoint,
                     ringLen: ringLen,
@@ -977,17 +1056,34 @@ actor WalletManager {
                 )
             } catch {
                 let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
-                print("❌ Send failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+                print("❌ Prepare send failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
                 throw error
             }
 
-            let feeXMR = Double(result.fee) / 1_000_000_000_000.0
-            print("✅ Sent txid=\(result.txid), fee=\(result.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR) via \(policy) endpoint \(endpoint)")
+            try persistPendingPrepared(for: walletId, nodeURL: usedEndpoint, prepared: prepared)
+
+            let relay: WalletCoreFFIClient.RelayResult
+            do {
+                relay = try WalletCoreFFIClient.relayPrepared(
+                    walletId: walletId,
+                    prepared: prepared,
+                    nodeURL: usedEndpoint
+                )
+            } catch {
+                let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+                print("❌ Relay prepared failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+                throw error
+            }
+
+            clearPendingPrepared(for: walletId)
+
+            let feeXMR = Double(prepared.fee) / 1_000_000_000_000.0
+            print("✅ Sent txid=\(relay.txid) status=\(relay.status), fee=\(prepared.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR) via \(policy) endpoint \(usedEndpoint)")
 
             exportCacheAndPersist(for: walletId)
             print("🗂️ Cache export reason: send walletId=\(walletId)")
 
-            return result
+            return (txid: relay.txid, fee: prepared.fee)
         }
     }
 
@@ -1139,35 +1235,37 @@ actor WalletManager {
         }
     }
 
-    private func sendOptionalSiblingFallback(
+    private func prepareOptionalSiblingFallback(
         walletId: String,
         nodeURL: String,
         ringLen: UInt8,
         toAddress: String,
         amountPiconero: UInt64
-    ) throws -> (txid: String, fee: UInt64) {
+    ) throws -> (WalletCoreFFIClient.PreparedSend, String) {
         do {
-            return try WalletCoreFFIClient.send(
+            let prepared = try WalletCoreFFIClient.prepareSend(
                 walletId: walletId,
                 toAddress: toAddress,
                 amountPiconero: amountPiconero,
                 ringLen: ringLen,
                 nodeURL: nodeURL
             )
+            return (prepared, nodeURL)
         } catch {
             let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? ""
             guard let fallbackURL = shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMsg, endpoint: nodeURL) else {
                 throw error
             }
 
-            print("↩️ Send retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
-            return try WalletCoreFFIClient.send(
+            print("↩️ Prepare send retry: Cuprate fee RPC unavailable at \(nodeURL); retrying via sibling Monero RPC \(fallbackURL)")
+            let prepared = try WalletCoreFFIClient.prepareSend(
                 walletId: walletId,
                 toAddress: toAddress,
                 amountPiconero: amountPiconero,
                 ringLen: ringLen,
                 nodeURL: fallbackURL
             )
+            return (prepared, fallbackURL)
         }
     }
 
