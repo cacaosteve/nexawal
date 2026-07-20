@@ -1,4 +1,5 @@
 import SwiftUI
+import NexaWalLogic
 
 struct SendView: View {
     @ObservedObject var viewModel: WalletViewModel
@@ -520,8 +521,11 @@ struct SendView: View {
                 // If sending from a subaddress, validate against that subaddress's unlocked balance.
                 let available = availablePiconero()
                 if let fee = estimatedFeePiconero {
-                    let total = safeAdd(amountPico, fee)
-                    if total > available {
+                    if !SendSafety.hasUnlockedForExactSend(
+                        amountPiconero: amountPico,
+                        feePiconero: fee,
+                        unlockedPiconero: available
+                    ) {
                         errorMessage = "Insufficient unlocked balance for amount + fee."
                         isSending = false
                         return

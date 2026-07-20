@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AAC2C8C42F0E21BC0080C162 /* MoneroWalletCoreFFI in Frameworks */ = {isa = PBXBuildFile; productRef = AAC2C8C32F0E21BC0080C162 /* MoneroWalletCoreFFI */; };
+		AAF100012F1E00010080C162 /* NexaWalLogic in Frameworks */ = {isa = PBXBuildFile; productRef = AAF100002F1E00010080C162 /* NexaWalLogic */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +28,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AAF100012F1E00010080C162 /* NexaWalLogic in Frameworks */,
 				AAC2C8C42F0E21BC0080C162 /* MoneroWalletCoreFFI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -71,6 +73,7 @@
 			name = nexawal;
 			packageProductDependencies = (
 				AAC2C8C32F0E21BC0080C162 /* MoneroWalletCoreFFI */,
+				AAF100002F1E00010080C162 /* NexaWalLogic */,
 			);
 			productName = nexawal;
 			productReference = AAABE44E2EDEBF11004D56AB /* nexawal.app */;
@@ -102,6 +105,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AAC2C8C22F0E21BC0080C162 /* XCLocalSwiftPackageReference "../MoneroWalletCoreFFI" */,
+				AAF100032F1E00010080C162 /* XCLocalSwiftPackageReference "Packages/NexaWalLogic" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AAABE44F2EDEBF11004D56AB /* Products */;
@@ -350,6 +354,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../MoneroWalletCoreFFI;
 		};
+		AAF100032F1E00010080C162 /* XCLocalSwiftPackageReference "Packages/NexaWalLogic" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/NexaWalLogic;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -357,6 +365,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AAC2C8C22F0E21BC0080C162 /* XCLocalSwiftPackageReference "../MoneroWalletCoreFFI" */;
 			productName = MoneroWalletCoreFFI;
+		};
+		AAF100002F1E00010080C162 /* NexaWalLogic */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AAF100032F1E00010080C162 /* XCLocalSwiftPackageReference "Packages/NexaWalLogic" */;
+			productName = NexaWalLogic;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

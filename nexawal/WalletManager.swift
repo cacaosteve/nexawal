@@ -6,9 +6,8 @@
 //
 
 import Foundation
-
-
 import MoneroWalletCoreFFI
+import NexaWalLogic
 
 enum WalletError: LocalizedError {
     case invalidMnemonic
@@ -54,26 +53,12 @@ actor WalletManager {
     private var refreshWaitTask: Task<WalletCoreFFIClient.SyncStatus, Error>?
     private var refreshCancelRequested: Bool = false
     /// Serializes send/sweep so double-tap Confirm cannot broadcast twice.
-    private var sendInFlight: Bool = false
+    private let sendGate = SendGate()
 
     private init() {}
 
-    private enum SendGateError: LocalizedError {
-        case alreadyInProgress
-
-        var errorDescription: String? {
-            switch self {
-            case .alreadyInProgress:
-                return "A send is already in progress. Wait for it to finish."
-            }
-        }
-    }
-
     private func withSendLock<T>(_ body: () throws -> T) throws -> T {
-        guard !sendInFlight else { throw SendGateError.alreadyInProgress }
-        sendInFlight = true
-        defer { sendInFlight = false }
-        return try body()
+        try sendGate.withLock(body)
     }
 
     private func normalizedMnemonic(_ mnemonic: String) -> String {
@@ -617,7 +602,8 @@ actor WalletManager {
 
     /// Apply HTTP proxy environment for I2P scan (I2P-only policy).
     private func applyNetworkProxy() {
-        if MoneroConfig.networkPolicy == .i2p, let proxy = MoneroConfig.i2pHTTPProxyAddress, !proxy.isEmpty {
+        if MoneroConfig.shouldUseI2PHTTPProxy(forBroadcast: false),
+           let proxy = MoneroConfig.i2pHTTPProxyAddress {
             applyProxyEnv(proxy)
         } else {
             clearProxyEnv()
@@ -626,8 +612,8 @@ actor WalletManager {
 
     /// Apply proxy settings for broadcast path (I2P only or hybrid).
     private func applyBroadcastProxy() {
-        let policy = MoneroConfig.networkPolicy
-        if (policy == .i2p || policy == .hybrid), let proxy = MoneroConfig.i2pHTTPProxyAddress, !proxy.isEmpty {
+        if MoneroConfig.shouldUseI2PHTTPProxy(forBroadcast: true),
+           let proxy = MoneroConfig.i2pHTTPProxyAddress {
             applyProxyEnv(proxy)
         } else {
             clearProxyEnv()
@@ -1006,50 +992,24 @@ actor WalletManager {
     }
 
     private func siblingMonerodURLIfNeeded(for endpoint: String) -> String? {
-        guard var components = URLComponents(string: endpoint),
-              components.port == 18092 else {
-            return nil
-        }
-
-        components.port = 18081
-        return components.url?.absoluteString
+        SendSafety.siblingMonerodURLIfNeeded(for: endpoint)
     }
 
     private func isFeeRateFailure(_ text: String) -> Bool {
-        let normalized = text.lowercased()
-        return normalized.contains("fee_rate failed") || normalized.contains("fee_rate_failed")
+        SendSafety.isFeeRateFailure(text)
     }
 
     /// Errors that imply construction/broadcast may have progressed past fee estimation.
     private func looksLikePostBroadcastOrSpendFailure(_ text: String) -> Bool {
-        let normalized = text.lowercased()
-        let markers = [
-            "key image",
-            "already spent",
-            "double spend",
-            "txid",
-            "transaction was rejected",
-            "failed to broadcast",
-            "relay",
-            "daemon rejected",
-        ]
-        return markers.contains { normalized.contains($0) }
+        SendSafety.looksLikePostBroadcastOrSpendFailure(text)
     }
 
     private func shouldRetryViaSiblingMonerod(error: Error, coreMessage: String, endpoint: String) -> String? {
-        guard let fallbackURL = siblingMonerodURLIfNeeded(for: endpoint) else {
-            return nil
-        }
-
-        let combined = "\(error.localizedDescription)\n\(coreMessage)"
-        if looksLikePostBroadcastOrSpendFailure(combined) {
-            return nil
-        }
-
-        if isFeeRateFailure(error.localizedDescription) || isFeeRateFailure(coreMessage) {
-            return fallbackURL
-        }
-        return nil
+        SendSafety.shouldRetryViaSiblingMonerod(
+            errorText: error.localizedDescription,
+            coreMessage: coreMessage,
+            endpoint: endpoint
+        )
     }
 
     /// Broadcast-path sibling retry: only when fee_rate failed before any spend/broadcast signal.

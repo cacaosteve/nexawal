@@ -1,5 +1,5 @@
 import Foundation
-import Darwin
+import NexaWalLogic
 
 // MoneroConfig — simplified to wallet2-like defaults.
 // - Only keeps node address, gap limits, account lookahead, and basic network policy.
@@ -113,21 +113,27 @@ struct MoneroConfig {
     }
 
     nonisolated static func scanNodeAddress() -> String {
-        switch networkPolicy {
-        case .clearnet, .hybrid:
-            return daemonAddress
-        case .i2p:
-            return i2pRPCAddress
-        }
+        NetworkRouting.scanNodeAddress(
+            policy: NetworkRouting.Policy(rawValue: networkPolicy.rawValue) ?? .clearnet,
+            clearnetNodeAddress: daemonAddress,
+            i2pRPCAddress: i2pRPCAddress
+        )
     }
 
     nonisolated static func broadcastNodeAddress() -> String {
-        switch networkPolicy {
-        case .clearnet:
-            return daemonAddress
-        case .i2p, .hybrid:
-            return i2pRPCAddress
-        }
+        NetworkRouting.broadcastNodeAddress(
+            policy: NetworkRouting.Policy(rawValue: networkPolicy.rawValue) ?? .clearnet,
+            clearnetNodeAddress: daemonAddress,
+            i2pRPCAddress: i2pRPCAddress
+        )
+    }
+
+    nonisolated static func shouldUseI2PHTTPProxy(forBroadcast: Bool) -> Bool {
+        NetworkRouting.shouldUseI2PHTTPProxy(
+            policy: NetworkRouting.Policy(rawValue: networkPolicy.rawValue) ?? .clearnet,
+            proxyConfigured: !(i2pHTTPProxyAddress ?? "").isEmpty,
+            forBroadcast: forBroadcast
+        )
     }
 
     nonisolated static func scanNodeURL() -> String {
