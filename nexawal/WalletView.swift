@@ -595,6 +595,9 @@ struct WalletView: View {
 struct SettingsView: View {
     @ObservedObject var viewModel: WalletViewModel
     @State private var nodeAddress: String
+    @State private var networkPolicy: MoneroConfig.NetworkPolicy
+    @State private var i2pRPCAddress: String
+    @State private var i2pProxyAddress: String
     @State private var rescanHeightInput: String
     @State private var gapLimitInput: String
     @State private var accountGapInput: String
@@ -610,6 +613,9 @@ struct SettingsView: View {
     init(viewModel: WalletViewModel) {
         self._viewModel = ObservedObject(initialValue: viewModel)
         self._nodeAddress = State(initialValue: MoneroConfig.daemonAddress)
+        self._networkPolicy = State(initialValue: MoneroConfig.networkPolicy)
+        self._i2pRPCAddress = State(initialValue: MoneroConfig.i2pRPCAddress)
+        self._i2pProxyAddress = State(initialValue: MoneroConfig.i2pHTTPProxyAddress ?? "")
         let heightValue = viewModel.restoreHeight
         self._rescanHeightInput = State(initialValue: heightValue == 0 ? "" : String(heightValue))
         self._gapLimitInput = State(initialValue: String(MoneroConfig.gapLimit))
@@ -638,6 +644,39 @@ struct SettingsView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                     Text("Example: 127.0.0.1:18092\n(Full URL will be: http://127.0.0.1:18092)")
+                        .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                        .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
+                }
+
+                Section(header: NeonSectionHeader(title: "Network Policy & I2P")) {
+                    Picker("Policy", selection: $networkPolicy) {
+                        Text("Clearnet only").tag(MoneroConfig.NetworkPolicy.clearnet)
+                        Text("I2P only").tag(MoneroConfig.NetworkPolicy.i2p)
+                        Text("Hybrid (scan clearnet, broadcast I2P)").tag(MoneroConfig.NetworkPolicy.hybrid)
+                    }
+                    .tint(classicPalette?.accent ?? .accentColor)
+
+                    Text("Clearnet uses your daemon above. I2P/hybrid use the I2P RPC node and HTTP proxy for .b32.i2p traffic.")
+                        .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                        .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
+
+                    TextField("I2P RPC hostname:port", text: $i2pRPCAddress)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .disabled(networkPolicy == .clearnet)
+                        .opacity(networkPolicy == .clearnet ? 0.45 : 1)
+
+                    TextField("I2P HTTP proxy host:port", text: $i2pProxyAddress)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .disabled(networkPolicy == .clearnet)
+                        .opacity(networkPolicy == .clearnet ? 0.45 : 1)
+
+                    Text("Proxy example: 127.0.0.1:4444 (I2P HTTP proxy). Required for I2P-only and hybrid broadcast.")
                         .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
                         .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                 }
@@ -816,6 +855,11 @@ struct SettingsView: View {
 
     private func saveSettings() {
         MoneroConfig.setDaemonAddress(nodeAddress)
+        MoneroConfig.setNetworkPolicy(networkPolicy)
+        MoneroConfig.setI2PRPCAddress(i2pRPCAddress.trimmingCharacters(in: .whitespacesAndNewlines))
+        let proxy = i2pProxyAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        MoneroConfig.setI2PHTTPProxyAddress(proxy.isEmpty ? nil : proxy)
+        MoneroConfig.setUseI2P(networkPolicy == .i2p || networkPolicy == .hybrid)
         MoneroConfig.setClassicUIEnabled(classicUIEnabled)
         if let gap = parsedGapLimit() {
             MoneroConfig.setGapLimit(gap)

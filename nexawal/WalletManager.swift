@@ -53,8 +53,28 @@ actor WalletManager {
     //  - mark refresh as no longer in progress so UI can recover
     private var refreshWaitTask: Task<WalletCoreFFIClient.SyncStatus, Error>?
     private var refreshCancelRequested: Bool = false
+    /// Serializes send/sweep so double-tap Confirm cannot broadcast twice.
+    private var sendInFlight: Bool = false
 
     private init() {}
+
+    private enum SendGateError: LocalizedError {
+        case alreadyInProgress
+
+        var errorDescription: String? {
+            switch self {
+            case .alreadyInProgress:
+                return "A send is already in progress. Wait for it to finish."
+            }
+        }
+    }
+
+    private func withSendLock<T>(_ body: () throws -> T) throws -> T {
+        guard !sendInFlight else { throw SendGateError.alreadyInProgress }
+        sendInFlight = true
+        defer { sendInFlight = false }
+        return try body()
+    }
 
     private func normalizedMnemonic(_ mnemonic: String) -> String {
         mnemonic
@@ -595,22 +615,40 @@ actor WalletManager {
         try mutableURL.setResourceValues(resourceValues)
     }
 
-    /// Apply HTTP proxy environment for I2P mode
+    /// Apply HTTP proxy environment for I2P scan (I2P-only policy).
     private func applyNetworkProxy() {
         if MoneroConfig.networkPolicy == .i2p, let proxy = MoneroConfig.i2pHTTPProxyAddress, !proxy.isEmpty {
-            let proxyURL = "http://\(proxy)"
-            setenv("HTTP_PROXY", proxyURL, 1)
-            setenv("http_proxy", proxyURL, 1)
-            setenv("ALL_PROXY", proxyURL, 1)
-            setenv("all_proxy", proxyURL, 1)
-            unsetenv("NO_PROXY")
-            unsetenv("no_proxy")
+            applyProxyEnv(proxy)
         } else {
-            unsetenv("HTTP_PROXY")
-            unsetenv("http_proxy")
-            unsetenv("ALL_PROXY")
-            unsetenv("all_proxy")
+            clearProxyEnv()
         }
+    }
+
+    /// Apply proxy settings for broadcast path (I2P only or hybrid).
+    private func applyBroadcastProxy() {
+        let policy = MoneroConfig.networkPolicy
+        if (policy == .i2p || policy == .hybrid), let proxy = MoneroConfig.i2pHTTPProxyAddress, !proxy.isEmpty {
+            applyProxyEnv(proxy)
+        } else {
+            clearProxyEnv()
+        }
+    }
+
+    private func applyProxyEnv(_ proxy: String) {
+        let proxyURL = proxy.hasPrefix("http://") || proxy.hasPrefix("https://") ? proxy : "http://\(proxy)"
+        setenv("HTTP_PROXY", proxyURL, 1)
+        setenv("http_proxy", proxyURL, 1)
+        setenv("ALL_PROXY", proxyURL, 1)
+        setenv("all_proxy", proxyURL, 1)
+        unsetenv("NO_PROXY")
+        unsetenv("no_proxy")
+    }
+
+    private func clearProxyEnv() {
+        unsetenv("HTTP_PROXY")
+        unsetenv("http_proxy")
+        unsetenv("ALL_PROXY")
+        unsetenv("all_proxy")
     }
 
     /// Apply scan tuning (parallelism and batch) via environment variables
@@ -782,24 +820,26 @@ actor WalletManager {
         toAddress: String,
         ringLen: UInt8 = 16
     ) throws -> (txid: String, amount: UInt64, fee: UInt64) {
-        guard let walletId = currentWalletId else {
-            throw WalletError.statusFailed("No wallet is currently open")
-        }
-        applyBroadcastProxy()
+        try withSendLock {
+            guard let walletId = currentWalletId else {
+                throw WalletError.statusFailed("No wallet is currently open")
+            }
+            applyBroadcastProxy()
 
-        let endpoint = MoneroConfig.broadcastNodeURL()
-        do {
-            return try sweepWithFilterOptionalSiblingFallback(
-                walletId: walletId,
-                nodeURL: endpoint,
-                ringLen: ringLen,
-                toAddress: toAddress,
-                filter: filterForSubaddressMinor(fromSubaddressMinor)
-            )
-        } catch {
-            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
-            print("❌ Sweep (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
-            throw error
+            let endpoint = MoneroConfig.broadcastNodeURL()
+            do {
+                return try sweepWithFilterOptionalSiblingFallback(
+                    walletId: walletId,
+                    nodeURL: endpoint,
+                    ringLen: ringLen,
+                    toAddress: toAddress,
+                    filter: filterForSubaddressMinor(fromSubaddressMinor)
+                )
+            } catch {
+                let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+                print("❌ Sweep (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+                throw error
+            }
         }
     }
 
@@ -810,25 +850,27 @@ actor WalletManager {
         amountPiconero: UInt64,
         ringLen: UInt8 = 16
     ) throws -> (txid: String, fee: UInt64) {
-        guard let walletId = currentWalletId else {
-            throw WalletError.statusFailed("No wallet is currently open")
-        }
-        applyBroadcastProxy()
+        try withSendLock {
+            guard let walletId = currentWalletId else {
+                throw WalletError.statusFailed("No wallet is currently open")
+            }
+            applyBroadcastProxy()
 
-        let endpoint = MoneroConfig.broadcastNodeURL()
-        let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
-        do {
-            return try sendWithFilterOptionalSiblingFallback(
-                walletId: walletId,
-                nodeURL: endpoint,
-                ringLen: ringLen,
-                destinations: [dest],
-                filter: filterForSubaddressMinor(fromSubaddressMinor)
-            )
-        } catch {
-            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
-            print("❌ Send (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
-            throw error
+            let endpoint = MoneroConfig.broadcastNodeURL()
+            let dest = WalletCoreFFIClient.Destination(address: toAddress, amount: amountPiconero)
+            do {
+                return try sendWithFilterOptionalSiblingFallback(
+                    walletId: walletId,
+                    nodeURL: endpoint,
+                    ringLen: ringLen,
+                    destinations: [dest],
+                    filter: filterForSubaddressMinor(fromSubaddressMinor)
+                )
+            } catch {
+                let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+                print("❌ Send (subaddr \(fromSubaddressMinor)) failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+                throw error
+            }
         }
     }
 
@@ -874,108 +916,92 @@ actor WalletManager {
 
     /// Sweep ("Send Max") to a destination. Returns (txid, amount, fee).
     func sweep(toAddress: String, ringLen: UInt8 = 16) throws -> (txid: String, amount: UInt64, fee: UInt64) {
-        guard let walletId = currentWalletId else {
-            throw WalletError.statusFailed("No wallet is currently open")
+        try withSendLock {
+            guard let walletId = currentWalletId else {
+                throw WalletError.statusFailed("No wallet is currently open")
+            }
+            applyBroadcastProxy()
+
+            let policy = MoneroConfig.networkPolicy
+            let endpoint = MoneroConfig.broadcastNodeURL()
+            let proxyDesc = MoneroConfig.i2pHTTPProxyAddress ?? "(none)"
+            if let (total, unlocked) = try? getBalance() {
+                let totalXMR = Double(total) / 1_000_000_000_000.0
+                let unlockedXMR = Double(unlocked) / 1_000_000_000_000.0
+                print("📤 Sweep start: ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc), balances total=\(String(format: "%.12f", totalXMR)) XMR, unlocked=\(String(format: "%.12f", unlockedXMR)) XMR")
+            } else {
+                print("📤 Sweep start: ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
+            }
+
+            let res: (txid: String, amount: UInt64, fee: UInt64)
+            do {
+                res = try sweepOptionalSiblingFallback(
+                    walletId: walletId,
+                    nodeURL: endpoint,
+                    ringLen: ringLen,
+                    toAddress: toAddress
+                )
+            } catch {
+                let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+                print("❌ Sweep failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+                throw error
+            }
+
+            let amountXMR = Double(res.amount) / 1_000_000_000_000.0
+            let feeXMR = Double(res.fee) / 1_000_000_000_000.0
+            print("✅ Swept txid=\(res.txid), amount=\(res.amount) piconero (\(String(format: "%.12f", amountXMR)) XMR), fee=\(res.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR) via \(policy) endpoint \(endpoint)")
+
+            // Persist immediately so pending-outgoing survives app restart/rebuild before next refresh.
+            exportCacheAndPersist(for: walletId)
+            print("🗂️ Cache export reason: sweep walletId=\(walletId)")
+
+            return res
         }
-        applyBroadcastProxy()
-
-        let policy = MoneroConfig.networkPolicy
-        let endpoint = MoneroConfig.broadcastNodeURL()
-        let proxyDesc = MoneroConfig.i2pHTTPProxyAddress ?? "(none)"
-        if let (total, unlocked) = try? getBalance() {
-            let totalXMR = Double(total) / 1_000_000_000_000.0
-            let unlockedXMR = Double(unlocked) / 1_000_000_000_000.0
-            print("📤 Sweep start: ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc), balances total=\(String(format: "%.12f", totalXMR)) XMR, unlocked=\(String(format: "%.12f", unlockedXMR)) XMR")
-        } else {
-            print("📤 Sweep start: ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
-        }
-
-        let res: (txid: String, amount: UInt64, fee: UInt64)
-        do {
-            res = try sweepOptionalSiblingFallback(
-                walletId: walletId,
-                nodeURL: endpoint,
-                ringLen: ringLen,
-                toAddress: toAddress
-            )
-        } catch {
-            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
-            print("❌ Sweep failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
-            throw error
-        }
-
-        let amountXMR = Double(res.amount) / 1_000_000_000_000.0
-        let feeXMR = Double(res.fee) / 1_000_000_000_000.0
-        print("✅ Swept txid=\(res.txid), amount=\(res.amount) piconero (\(String(format: "%.12f", amountXMR)) XMR), fee=\(res.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR) via \(policy) endpoint \(endpoint)")
-
-        // Persist immediately so pending-outgoing survives app restart/rebuild before next refresh.
-        exportCacheAndPersist(for: walletId)
-        print("🗂️ Cache export reason: sweep walletId=\(walletId)")
-
-        return res
     }
 
     /// Send to a single destination honoring broadcast policy (clearnet, I2P, or hybrid).
     func send(toAddress: String, amountPiconero: UInt64, ringLen: UInt8 = 16) throws -> (txid: String, fee: UInt64) {
-        guard let walletId = currentWalletId else {
-            throw WalletError.statusFailed("No wallet is currently open")
-        }
-        applyBroadcastProxy()
+        try withSendLock {
+            guard let walletId = currentWalletId else {
+                throw WalletError.statusFailed("No wallet is currently open")
+            }
+            applyBroadcastProxy()
 
-        // Verbose logging: amount, policy, endpoint, proxy, balances
-        let policy = MoneroConfig.networkPolicy
-        let endpoint = MoneroConfig.broadcastNodeURL()
-        let proxyDesc = MoneroConfig.i2pHTTPProxyAddress ?? "(none)"
-        let amountXMR = Double(amountPiconero) / 1_000_000_000_000.0
-        if let (total, unlocked) = try? getBalance() {
-            let totalXMR = Double(total) / 1_000_000_000_000.0
-            let unlockedXMR = Double(unlocked) / 1_000_000_000_000.0
-            print("📤 Send start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc), balances total=\(String(format: "%.12f", totalXMR)) XMR, unlocked=\(String(format: "%.12f", unlockedXMR)) XMR")
-        } else {
-            print("📤 Send start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
-        }
+            // Verbose logging: amount, policy, endpoint, proxy, balances
+            let policy = MoneroConfig.networkPolicy
+            let endpoint = MoneroConfig.broadcastNodeURL()
+            let proxyDesc = MoneroConfig.i2pHTTPProxyAddress ?? "(none)"
+            let amountXMR = Double(amountPiconero) / 1_000_000_000_000.0
+            if let (total, unlocked) = try? getBalance() {
+                let totalXMR = Double(total) / 1_000_000_000_000.0
+                let unlockedXMR = Double(unlocked) / 1_000_000_000_000.0
+                print("📤 Send start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc), balances total=\(String(format: "%.12f", totalXMR)) XMR, unlocked=\(String(format: "%.12f", unlockedXMR)) XMR")
+            } else {
+                print("📤 Send start: amount=\(String(format: "%.12f", amountXMR)) XMR, ring=\(ringLen), policy=\(policy), broadcast=\(endpoint), proxy=\(proxyDesc)")
+            }
 
-        let result: (txid: String, fee: UInt64)
-        do {
-            result = try sendOptionalSiblingFallback(
-                walletId: walletId,
-                nodeURL: endpoint,
-                ringLen: ringLen,
-                toAddress: toAddress,
-                amountPiconero: amountPiconero
-            )
-        } catch {
-            let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
-            print("❌ Send failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
-            throw error
-        }
+            let result: (txid: String, fee: UInt64)
+            do {
+                result = try sendOptionalSiblingFallback(
+                    walletId: walletId,
+                    nodeURL: endpoint,
+                    ringLen: ringLen,
+                    toAddress: toAddress,
+                    amountPiconero: amountPiconero
+                )
+            } catch {
+                let coreMsg = WalletCoreFFIClient.lastErrorMessage() ?? "(none)"
+                print("❌ Send failed: error=\(error.localizedDescription) walletcore_last_error=\(coreMsg)")
+                throw error
+            }
 
-        let feeXMR = Double(result.fee) / 1_000_000_000_000.0
-        print("✅ Sent txid=\(result.txid), fee=\(result.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR) via \(policy) endpoint \(endpoint)")
+            let feeXMR = Double(result.fee) / 1_000_000_000_000.0
+            print("✅ Sent txid=\(result.txid), fee=\(result.fee) piconero (\(String(format: "%.12f", feeXMR)) XMR) via \(policy) endpoint \(endpoint)")
 
-        // Persist immediately so pending-outgoing survives app restart/rebuild before next refresh.
-        exportCacheAndPersist(for: walletId)
-        print("🗂️ Cache export reason: send walletId=\(walletId)")
+            exportCacheAndPersist(for: walletId)
+            print("🗂️ Cache export reason: send walletId=\(walletId)")
 
-        return result
-    }
-
-    /// Apply proxy settings for broadcast path (I2P only or hybrid).
-    private func applyBroadcastProxy() {
-        let policy = MoneroConfig.networkPolicy
-        if (policy == .i2p || policy == .hybrid), let proxy = MoneroConfig.i2pHTTPProxyAddress, !proxy.isEmpty {
-            let proxyURL = "http://\(proxy)"
-            setenv("HTTP_PROXY", proxyURL, 1)
-            setenv("http_proxy", proxyURL, 1)
-            setenv("ALL_PROXY", proxyURL, 1)
-            setenv("all_proxy", proxyURL, 1)
-            unsetenv("NO_PROXY")
-            unsetenv("no_proxy")
-        } else {
-            unsetenv("HTTP_PROXY")
-            unsetenv("http_proxy")
-            unsetenv("ALL_PROXY")
-            unsetenv("all_proxy")
+            return result
         }
     }
 
@@ -994,8 +1020,29 @@ actor WalletManager {
         return normalized.contains("fee_rate failed") || normalized.contains("fee_rate_failed")
     }
 
+    /// Errors that imply construction/broadcast may have progressed past fee estimation.
+    private func looksLikePostBroadcastOrSpendFailure(_ text: String) -> Bool {
+        let normalized = text.lowercased()
+        let markers = [
+            "key image",
+            "already spent",
+            "double spend",
+            "txid",
+            "transaction was rejected",
+            "failed to broadcast",
+            "relay",
+            "daemon rejected",
+        ]
+        return markers.contains { normalized.contains($0) }
+    }
+
     private func shouldRetryViaSiblingMonerod(error: Error, coreMessage: String, endpoint: String) -> String? {
         guard let fallbackURL = siblingMonerodURLIfNeeded(for: endpoint) else {
+            return nil
+        }
+
+        let combined = "\(error.localizedDescription)\n\(coreMessage)"
+        if looksLikePostBroadcastOrSpendFailure(combined) {
             return nil
         }
 
@@ -1003,6 +1050,11 @@ actor WalletManager {
             return fallbackURL
         }
         return nil
+    }
+
+    /// Broadcast-path sibling retry: only when fee_rate failed before any spend/broadcast signal.
+    private func shouldRetryBroadcastViaSiblingMonerod(error: Error, coreMessage: String, endpoint: String) -> String? {
+        shouldRetryViaSiblingMonerod(error: error, coreMessage: coreMessage, endpoint: endpoint)
     }
 
     private func previewFeeWithOptionalSiblingFallback(
