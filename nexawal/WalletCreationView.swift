@@ -56,15 +56,19 @@ struct WalletCreationView: View {
             Form {
                 Section(header: NeonSectionHeader(title: "Wallet Setup")) {
                     Text("Choose whether you’re creating a brand new wallet (fast sync) or importing an existing wallet (full scan unless you set a restore height).")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                        .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
 
-                    Picker("Mode", selection: $setupMode) {
-                        ForEach(WalletSetupMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
+                    if classicUI, let palette = classicPalette {
+                        neonSetupModePicker(palette: palette)
+                    } else {
+                        Picker("Mode", selection: $setupMode) {
+                            ForEach(WalletSetupMode.allCases) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
                         }
+                        .pickerStyle(.segmented)
                     }
-                    .pickerStyle(.segmented)
 
                     switch setupMode {
                     case .create:
@@ -86,22 +90,22 @@ struct WalletCreationView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             if isFetchingSuggestedHeight {
                                 Text("Starting height: fetching from node…")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                                    .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                    .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                             } else if let suggested = suggestedRestoreHeight {
                                 Text("Starting height (fast): \(suggested) (node tip − 10)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                                    .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                    .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                             } else {
                                 Text("Starting height (fast): unavailable (will use 0)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                                    .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                    .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                             }
 
                             if let msg = suggestedHeightError {
                                 Text(msg)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                                    .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                    .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                             }
                         }
 
@@ -117,12 +121,12 @@ struct WalletCreationView: View {
                                 let height = UInt64(restoreHeightInput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
                                 if height == 0 {
                                     Text("Tip: 0 scans the full chain history. This is the safest option if you’re unsure, but it can take longer to sync.")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
+                                        .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                        .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                                 } else {
                                     Text("Warning: If you set a restore height after your first transaction, older funds will not appear until you rescan from an earlier height.")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
+                                        .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                                        .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                                 }
                             }
                         }
@@ -138,12 +142,12 @@ struct WalletCreationView: View {
 
                     if !biometricsAvailable {
                         Text("Biometric or device authentication is not available on this device.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                            .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                     } else if !biometricsEnrolled {
                         Text("Biometric authentication is available, but no biometric data is enrolled.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                            .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                     }
                 }
 
@@ -239,7 +243,15 @@ struct WalletCreationView: View {
                     }
                 }
             }
-            .navigationTitle(classicUI ? "NEXAWAL" : "Create Wallet")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text(classicUI ? "NEXAWAL" : "Create Wallet")
+                        .font(classicUI ? .system(.headline, design: .monospaced).weight(.bold) : .headline)
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
+                        .tracking(classicUI ? 2 : 0)
+                }
+            }
             .neonFormChrome(classicUI: classicUI, palette: classicPalette)
             .tint(classicPalette?.accent ?? .accentColor)
         }
@@ -270,14 +282,42 @@ struct WalletCreationView: View {
         }
     }
 
+    // MARK: - Neon setup mode picker
+
+    @ViewBuilder
+    private func neonSetupModePicker(palette: ClassicPalette) -> some View {
+        HStack(spacing: 0) {
+            ForEach(WalletSetupMode.allCases) { mode in
+                let selected = setupMode == mode
+                Button {
+                    setupMode = mode
+                } label: {
+                    Text(mode.rawValue)
+                        .font(.system(.caption, design: .monospaced).weight(.semibold))
+                        .foregroundStyle(selected ? palette.ctaText : palette.primaryText)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(selected ? palette.cta : Color.clear)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(palette.card)
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(palette.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
     // MARK: - Create-mode seed backup gate
 
     @ViewBuilder
     private var seedBackupGateView: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("This is your recovery seed. Write it down on paper and store it somewhere safe. Anyone with these words can access your funds — nexawal never uploads or backs it up for you.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
 
             mnemonicWordGrid
 
@@ -308,11 +348,11 @@ struct WalletCreationView: View {
                 HStack(spacing: 4) {
                     Text("\(index + 1).")
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
                         .frame(width: 24, alignment: .trailing)
                     Text(word)
                         .font(.system(.body, design: .monospaced))
-                        .foregroundColor(classicPalette?.primaryText ?? .primary)
+                        .foregroundStyle(classicPalette?.primaryText ?? .primary)
                 }
             }
         }
@@ -324,8 +364,8 @@ struct WalletCreationView: View {
     private var seedChallengeView: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Confirm you wrote it down: enter the requested words below.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(classicUI ? .system(.caption, design: .monospaced) : .caption)
+                .foregroundStyle(classicPalette?.secondaryText ?? .secondary)
 
             ForEach(Array(seedChallengeIndices.enumerated()), id: \.offset) { i, wordIndex in
                 HStack {
